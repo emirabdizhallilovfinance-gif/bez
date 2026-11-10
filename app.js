@@ -93,7 +93,7 @@
       list.replaceChildren();
       if (error) { list.append(h("p", { class: "error" }, "Не удалось загрузить проекты")); return; }
       if (!data.length) { list.append(h("p", { class: "muted" }, "Проектов пока нет. Создайте первый.")); return; }
-      data.forEach(p => list.append(h("div", { class: "item" },
+                  data.forEach(p => list.append(h("div", { class: "item", style: "cursor:pointer", onclick: () => projectView(body, p, () => renderHome(user)) },
         h("span", {}, p.name),
         h("span", { class: "muted" }, new Date(p.created_at).toLocaleDateString("ru-RU")))));
     }
@@ -101,7 +101,26 @@
     body.append(h("h2", {}, "Проекты"), form, msg, list);
     await load();
   }
-
+  // ---------- Admin: one project page ----------
+  async function projectView(body, project, back) {
+    const list = h("div", { class: "list" }, h("p", { class: "muted" }, "Загрузка…"));
+    body.replaceChildren(
+      h("button", { class: "alt", onclick: back }, "← Назад"),
+      h("h2", {}, project.name),
+      list);
+    const { data: members, error } = await sb.from("project_members")
+      .select("user_id").eq("project_id", project.id);
+    if (error) { list.replaceChildren(h("p", { class: "error" }, "Не удалось загрузить сотрудников")); return; }
+    if (!members.length) { list.replaceChildren(h("p", { class: "muted" }, "В проекте пока нет сотрудников.")); return; }
+    const ids = members.map(m => m.user_id);
+    const { data: people } = await sb.from("profiles").select("id, full_name").in("id", ids);
+    const { data: bals } = await sb.from("balances").select("worker_id, balance").eq("project_id", project.id);
+    const nameOf = id => ((people || []).find(p => p.id === id) || {}).full_name || "Без имени";
+    const balOf = id => Number(((bals || []).find(b => b.worker_id === id) || {}).balance || 0);
+    list.replaceChildren(...ids.map(id => h("div", { class: "item" },
+      h("span", {}, nameOf(id)),
+      h("strong", {}, balOf(id).toLocaleString("ru-RU") + " сом"))));
+  }
   // ---------- Worker: only my projects ----------
   async function workerView(body, user) {
     const { data, error } = await sb.from("project_members")
