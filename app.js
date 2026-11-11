@@ -102,6 +102,33 @@
     await load();
   }
   // ---------- Admin: one project page ----------
+
+async function workerProjectView(body, project, user, back) {
+  const { data, error } = await sb.from("balances")
+    .select("balance")
+    .eq("project_id", project.project_id)
+    .eq("worker_id", user.id);
+
+  body.replaceChildren(
+    h("button", { class: "alt", onclick: back }, "← Назад"),
+    h("h2", {}, project.projects ? project.projects.name : "Проект")
+  );
+
+  if (error) {
+    body.append(h("p", { class: "error" }, "Не удалось загрузить баланс"));
+    return;
+  }
+
+  const balance = Number((data || [])[0]?.balance || 0);
+
+  body.append(
+    h("div", { class: "item" },
+      h("span", {}, "Мой баланс"),
+      h("strong", {}, balance.toLocaleString("ru-RU") + " сом")
+    )
+  );
+}
+
   async function projectView(body, project, back) {
     const list = h("div", { class: "list" }, h("p", { class: "muted" }, "Загрузка…"));
     body.replaceChildren(
@@ -121,17 +148,66 @@
       h("span", {}, nameOf(id)),
       h("strong", {}, balOf(id).toLocaleString("ru-RU") + " сом"))));
   }
+
+async function workerProjectView(body, project, user, back) {
+  const { data, error } = await sb.from("balances")
+    .select("balance")
+    .eq("project_id", project.project_id)
+    .eq("worker_id", user.id);
+
+  body.replaceChildren(
+    h("button", { class: "alt", onclick: back }, "← Назад"),
+    h("h2", {}, project.projects ? project.projects.name : "Проект")
+  );
+
+  if (error) {
+    body.append(h("p", { class: "error" }, "Не удалось загрузить баланс"));
+    return;
+  }
+
+  const balance = Number((data || [])[0]?.balance || 0);
+
+  body.append(
+    h("div", { class: "item" },
+      h("span", {}, "Мой баланс"),
+      h("strong", {}, balance.toLocaleString("ru-RU") + " сом")
+    )
+  );
+}
+
   // ---------- Worker: only my projects ----------
   async function workerView(body, user) {
-    const { data, error } = await sb.from("project_members")
-      .select("project_id, projects(name)").eq("user_id", user.id);
-    const list = h("div", { class: "list" });
-    if (error) list.append(h("p", { class: "error" }, "Не удалось загрузить проекты"));
-    else if (!data.length) list.append(h("p", { class: "muted" }, "Вас пока не добавили ни в один проект."));
-    else data.forEach(m => list.append(h("div", { class: "item" },
-      h("span", {}, m.projects ? m.projects.name : "Проект"))));
-    body.append(h("h2", {}, "Мои проекты"), list);
+async function workerView(body, user) {
+  const { data, error } = await sb.from("project_members")
+    .select("project_id, projects(name)").eq("user_id", user.id);
+
+  const { data: bals } = await sb.from("balances")
+    .select("project_id, balance").eq("worker_id", user.id);
+
+  const list = h("div", { class: "list" });
+
+  if (error) {
+    list.append(h("p", { class: "error" }, "Не удалось загрузить проекты"));
+  } else if (!data.length) {
+    list.append(h("p", { class: "muted" }, "Вас пока не добавили ни в один проект."));
+  } else {
+    data.forEach(m => {
+      const b = Number((bals || []).find(x => x.project_id === m.project_id)?.balance || 0);
+
+      list.append(h("div", {
+        class: "item",
+        onclick: () => workerProjectView(body, m, user, () => workerView(body, user))
+      },
+        h("span", {}, m.projects ? m.projects.name : "Проект"),
+        h("strong", {}, b.toLocaleString("ru-RU") + " сом")
+      ));
+    });
   }
+
+  body.replaceChildren(h("h2", {}, "Мои проекты"), list);
+}
+	
+ }x
 
   // ---------- Session handling ----------
   sb.auth.onAuthStateChange((event, session) => {

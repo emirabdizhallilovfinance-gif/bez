@@ -20,6 +20,12 @@ h1 { margin: 0 0 4px; font-size: 1.8rem; }
 h2 { margin: 24px 0 12px; font-size: 1.1rem; }
 .muted { color: var(--muted); font-size: 0.9rem; }
 .error { color: var(--danger); min-height: 1.2em; margin: 8px 0; }
+.worker-heading {
+  display: flex; justify-content: space-between; align-items: center;
+  gap: 12px; margin-top: 24px;
+}
+.worker-heading h2 { margin: 0; }
+.worker-total { display: grid; justify-items: end; gap: 2px; text-align: right; }
 .card {
   background: var(--card); border: 1px solid var(--line);
   border-radius: 14px; padding: 20px;
@@ -49,4 +55,8 @@ input:focus-visible, button:focus-visible { outline: 2px solid var(--accent); ou
   display: flex; justify-content: space-between; align-items: center; gap: 12px;
   background: var(--card); border: 1px solid var(--line);
   border-radius: 12px; padding: 14px 16px;
+}
+@media (max-width: 380px) {
+  .worker-heading { align-items: flex-start; }
+  .worker-total .muted { font-size: 0.75rem; }
 }
