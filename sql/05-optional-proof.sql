@@ -1,5 +1,5 @@
 -- Proof photos are no longer required: a description is enough.
--- Run after proof-storage-policy.sql. Old proofs stay viewable; a proof that
+-- Run after 03-proof-storage-policy.sql. Old proofs stay viewable; a proof that
 -- is attached is still checked the same way as before.
 BEGIN;
 

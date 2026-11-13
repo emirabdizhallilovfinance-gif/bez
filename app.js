@@ -290,7 +290,7 @@
     link.remove();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
-  // Contract table is created by project-contract.sql; until it exists, show a hint instead of failing.
+  // Contract table is created by sql/04-project-contract.sql; until it exists, show a hint instead of failing.
   const contractTableMissing = error => !!error && (error.code === "42P01" || error.code === "PGRST205"
     || /project_contracts/.test(error.message || ""));
 
@@ -473,7 +473,7 @@
     const notices = [];
     if (data.projectsError) notices.push(h("p", { class: "error" }, "Не удалось загрузить проекты"));
     if (contractTableMissing(data.contractsError)) {
-      notices.push(h("p", { class: "notice" }, "Контракты пока недоступны: выполните project-contract.sql в Supabase SQL Editor."));
+      notices.push(h("p", { class: "notice" }, "Контракты пока недоступны: выполните sql/04-project-contract.sql в Supabase SQL Editor."));
     } else if (data.contractsError) {
       notices.push(h("p", { class: "error" }, "Не удалось загрузить контракты: " + data.contractsError.message));
     }
@@ -619,7 +619,7 @@
             .upsert({ project_id: created.id, amount });
           if (contractError) {
             msg.textContent = contractTableMissing(contractError)
-              ? "Проект создан, но контракт не сохранён: выполните project-contract.sql в Supabase"
+              ? "Проект создан, но контракт не сохранён: выполните sql/04-project-contract.sql в Supabase"
               : "Проект создан, но контракт не сохранён: " + contractError.message;
           }
         }
@@ -815,7 +815,7 @@
     const pendingCard = expense => decisionCard(expense, nameOf(expense.worker_id),
       expense.reason + " · " + date(expense.created_at), () => projectView(body, project, back, user));
 
-    // ----- Contract (admin only; protected by RLS in project-contract.sql) -----
+    // ----- Contract (admin only; protected by RLS in sql/04-project-contract.sql) -----
     const contractAmount = contract ? Number(contract.amount || 0) : null;
     const contractLeft = contractAmount === null ? null : contractAmount - deductedTotal;
     const contractInput = h("input", {
@@ -841,7 +841,7 @@
         const { error: saveError } = await sb.from("project_contracts").upsert({ project_id: project.id, amount: value });
         if (saveError) {
           contractMsg.textContent = contractTableMissing(saveError)
-            ? "Сначала выполните project-contract.sql в Supabase SQL Editor"
+            ? "Сначала выполните sql/04-project-contract.sql в Supabase SQL Editor"
             : "Не удалось сохранить контракт: " + saveError.message;
           contractSave.disabled = false;
           return;
@@ -853,7 +853,7 @@
     let contractStat;
     if (contractError && contractTableMissing(contractError)) {
       contractStat = stat("Остаток контракта", "—",
-        h("span", { class: "stat-note" }, "Выполните project-contract.sql в Supabase"), "accent");
+        h("span", { class: "stat-note" }, "Выполните sql/04-project-contract.sql в Supabase"), "accent");
     } else if (contractError) {
       contractStat = stat("Остаток контракта", "—",
         h("span", { class: "stat-note error" }, contractError.message), "accent");

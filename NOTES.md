@@ -3,7 +3,7 @@
 ## Done today
 - PR #1 merged: project contracts, adding workers, warning badges, CSV, charts, black-and-white redesign.
 - PR #2 merged: photos are no longer required. Top-ups, deductions and expenses need only an amount and a description. Old photos can still be opened.
-- Supabase: blocked direct API calls to 3 internal functions. Made `proof_path` optional (`optional-proof.sql`, already applied).
+- Supabase: blocked direct API calls to 3 internal functions. Made `proof_path` optional (`sql/05-optional-proof.sql`, already applied).
 - Tested with real accounts: top-up 10, deduction 5, worker expense 3. Balance is correct (1 002 сом).
 - Local Bez folder is synced with GitHub `main`. `app-recovery-copy.js` deleted (it's in the Recycle Bin).
 
@@ -24,7 +24,8 @@
 ## Later (optional)
 - Admin page reloads all data after every action (slow, but works).
 - Supabase performance hints: missing indexes, small policy tweaks.
-- Delete old branches: `claude/bez-project-inspection-b687e8`, `claude/bez-project-contracts-ebad89`, `claude/bez-project-inspection-44f66a`.
+- Archive the old Claude sessions "Bez project inspection" and "BEZ project inspection" (right-click in the sidebar → Archive), then delete their branches on GitHub: `claude/bez-project-inspection-44f66a` (merged) and `claude/bez-project-inspection-b687e8` (an older attempt that was never merged; everything useful is already on `main`).
+- After the NOTES/cleanup PR is merged, delete `claude/bez-project-contracts-ebad89` too.
 
 ## Decisions I still need to make
 - Should money given to workers (Пополнение) come off the project contract? Right now it does NOT. Only expenses and deductions do.
@@ -34,5 +35,5 @@
 ## Remember
 - Supabase project: **Bez** (`sthkgkxnphjtlngopvlh`). The other project ("…'s Project") is not Bez.
 - GitHub repo: `emirabdizhallilovfinance-gif/bez`. Vercel `expancetracer` is a DIFFERENT app.
-- Do NOT run `proof-storage-policy.sql` again. It would make photos required again. `optional-proof.sql` comes after it.
+- Do NOT run `sql/03-proof-storage-policy.sql` again. It would make photos required again. `sql/05-optional-proof.sql` comes after it.
 - Only the PUBLISHABLE key goes in `config.js`. Never the secret / service_role key.
