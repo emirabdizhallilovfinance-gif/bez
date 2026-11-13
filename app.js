@@ -55,6 +55,11 @@
 
   const sb = supabase.createClient(cfg.SUPABASE_URL, cfg.SUPABASE_KEY);
   const maxProofSize = 10 * 1024 * 1024;
+  const statusText = status => ({
+    pending: "Ожидает решения",
+    approved: "Одобрено",
+    rejected: "Отклонено (не списано)"
+  })[status] || status;
 
   function proofFileInput(label) {
     return h("input", {
@@ -208,7 +213,7 @@
     ] = await Promise.all([
       sb.from("project_members").select("user_id").eq("project_id", project.id),
       loadAllRows("transfers", "worker_id, amount, note, proof_path, created_at"),
-      loadAllRows("expenses", "worker_id, amount, reason, proof_path, status, created_at"),
+      loadAllRows("expenses", "id, worker_id, amount, reason, proof_path, status, admin_comment, created_at"),
       sb.from("balances").select("worker_id, balance").eq("project_id", project.id)
     ]);
     if (membersError || transfersError || expensesError || balancesError) {
@@ -242,7 +247,7 @@
     const balanceOf = id => Number((balances || []).find(balance => balance.worker_id === id)?.balance || 0);
     const addedTotal = transfers.reduce((total, transfer) => total + Number(transfer.amount || 0), 0);
     const deductedTotal = expenses
-      .filter(expense => expense.status === "approved")
+      .filter(expense => expense.status !== "rejected")
       .reduce((total, expense) => total + Number(expense.amount || 0), 0);
     const money = value => value.toLocaleString("ru-RU") + " сом";
     const date = value => new Date(value).toLocaleString("ru-RU");
@@ -254,7 +259,55 @@
         ])));
 
     const currentMembers = members.map(member => member.user_id);
+
+    function pendingCard(expense) {
+      const comment = h("input", {
+        type: "text",
+        maxlength: "300",
+        placeholder: "Комментарий (для отклонения)",
+        "aria-label": "Комментарий к расходу"
+      });
+      const error = h("p", { class: "error" });
+      const approve = h("button", { type: "button", onclick: () => decide("approved") }, "Одобрить");
+      const reject = h("button", { type: "button", class: "alt", onclick: () => decide("rejected") }, "Отклонить");
+
+      async function decide(status) {
+        error.textContent = "";
+        approve.disabled = true;
+        reject.disabled = true;
+        const { error: updateError } = await sb.from("expenses")
+          .update({
+            status,
+            admin_comment: status === "rejected" ? (comment.value.trim() || null) : null
+          })
+          .eq("id", expense.id)
+          .eq("status", "pending");
+        if (updateError) {
+          error.textContent = "Не удалось сохранить решение: " + updateError.message;
+          approve.disabled = false;
+          reject.disabled = false;
+          return;
+        }
+        await projectView(body, project, back, user);
+      }
+
+      return h("div", { class: "worker-balance" },
+        h("div", { class: "worker-balance-heading" },
+          h("span", {}, nameOf(expense.worker_id) + " · " + expense.reason),
+          h("strong", {}, "−" + money(Number(expense.amount)))),
+        h("div", { class: "muted" }, date(expense.created_at)),
+        proofButton(expense.proof_path),
+        comment,
+        h("div", { class: "row" }, approve, reject),
+        error);
+    }
+
+    const pendingExpenses = expenses.filter(expense => expense.status === "pending");
     list.replaceChildren(
+      h("h2", {}, "Ожидают решения"),
+      ...(pendingExpenses.length
+        ? pendingExpenses.map(pendingCard)
+        : [h("p", { class: "muted" }, "Нет расходов, ожидающих решения.")]),
       h("div", { class: "transaction-totals" },
         h("div", { class: "transaction-total" }, h("span", { class: "muted" }, "Всего добавлено"), h("strong", {}, money(addedTotal))),
         h("div", { class: "transaction-total" }, h("span", { class: "muted" }, "Всего списано"), h("strong", {}, money(deductedTotal))),
@@ -274,7 +327,7 @@
           h("td", {}, nameOf(expense.worker_id)),
           h("td", {}, expense.reason),
           h("td", {}, proofButton(expense.proof_path)),
-          h("td", {}, expense.status === "rejected" ? "Отклонено (не списано)" : expense.status),
+          h("td", {}, statusText(expense.status), expense.admin_comment ? h("div", { class: "muted" }, expense.admin_comment) : ""),
           h("td", {}, (expense.status === "rejected" ? "" : "−") + money(Number(expense.amount))))), "Списаний пока нет."));
 
     list.append(h("h2", {}, "Баланс сотрудников"));
@@ -402,7 +455,7 @@
     ] = await Promise.all([
       sb.from("balances").select("balance")
         .eq("project_id", project.project_id).eq("worker_id", user.id),
-      sb.from("expenses").select("amount, reason, proof_path, status, created_at")
+      sb.from("expenses").select("amount, reason, proof_path, status, admin_comment, created_at")
         .eq("project_id", project.project_id).eq("worker_id", user.id)
         .order("created_at", { ascending: false }),
       sb.from("transfers").select("amount, note, proof_path, created_at")
@@ -475,7 +528,7 @@
             h("td", {}, new Date(expense.created_at).toLocaleString("ru-RU")),
             h("td", {}, expense.reason),
             h("td", {}, (expense.status === "rejected" ? "" : "−") + money(expense.amount)),
-            h("td", {}, expense.status === "rejected" ? "Отклонено (не списано)" : expense.status),
+            h("td", {}, statusText(expense.status), expense.admin_comment ? h("div", { class: "muted" }, "Комментарий: " + expense.admin_comment) : ""),
             h("td", {}, proofButton(expense.proof_path))))
           : [h("tr", {}, h("td", { colspan: "5", class: "muted" }, "Расходов пока нет."))])));
     const transfersTable = h("div", { class: "table-wrap" },
