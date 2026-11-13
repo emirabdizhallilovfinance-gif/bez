@@ -1,6 +1,10 @@
 (function () {
   const cfg = window.BEZ_CONFIG || {};
   const root = document.getElementById("app");
+  try {
+    const savedTheme = localStorage.getItem("bez-theme");
+    if (savedTheme === "dark" || savedTheme === "light") document.documentElement.dataset.theme = savedTheme;
+  } catch (storageError) { /* storage blocked: follow the system theme */ }
 
   // Tiny helper to build elements safely (text is never treated as HTML)
   function h(tag, props, ...kids) {
@@ -105,7 +109,11 @@
     users: "M9 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6Zm-6 8a6 6 0 0 1 12 0M17 11a3 3 0 0 0 0-6m4 14a6 6 0 0 0-3-5.2",
     grid: "M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z",
     file: "M7 3h7l5 5v13H7zM14 3v5h5M10 13h6M10 17h6",
-    doc: "M6 3h12v18H6zM9 8h6M9 12h6M9 16h3"
+    doc: "M6 3h12v18H6zM9 8h6M9 12h6M9 16h3",
+    home: "M4 11 12 4l8 7v9h-5v-6H9v6H4z",
+    check: "M8 4h8v3H8zM6 6H5v15h14V6h-1M9 14l2 2 4-4",
+    sun: "M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8ZM12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4",
+    moon: "M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5Z"
   };
   const icon = name => s("svg", {
     class: "icon", viewBox: "0 0 24 24", width: "20", height: "20", fill: "none", stroke: "currentColor",
@@ -366,41 +374,269 @@
       form));
   }
 
+  // ---------- Theme (light / dark), remembered on this device ----------
+  const THEME_KEY = "bez-theme";
+  function currentTheme() {
+    return document.documentElement.dataset.theme
+      || (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+  }
+  function applyTheme(theme) {
+    document.documentElement.dataset.theme = theme;
+    try { localStorage.setItem(THEME_KEY, theme); } catch (storageError) { /* private mode: theme lasts until reload */ }
+  }
+  function themeToggle() {
+    const button = h("button", { type: "button", class: "nav-item theme-toggle" });
+    function paint() {
+      const dark = currentTheme() === "dark";
+      button.replaceChildren(icon(dark ? "sun" : "moon"), h("span", { class: "nav-label" }, dark ? "Светлая тема" : "Тёмная тема"));
+    }
+    button.addEventListener("click", () => { applyTheme(currentTheme() === "dark" ? "light" : "dark"); paint(); });
+    paint();
+    return button;
+  }
+
   // ---------- Home (depends on role) ----------
   async function renderHome(user) {
-    show(h("p", { class: "muted" }, "Загрузка…"));
+    show(h("p", { class: "muted loading" }, "Загрузка…"));
     const { data: profile, error } = await sb.from("profiles")
       .select("full_name, role").eq("id", user.id).single();
     const logout = h("button", { class: "alt", onclick: () => sb.auth.signOut() }, "Выйти");
     if (error || !profile) {
-      show(h("div", { class: "card" },
+      show(h("div", { class: "card login" },
         h("p", { class: "error" }, "Не удалось загрузить профиль."), logout));
       return;
     }
     const isAdmin = profile.role === "admin";
     const displayName = profile.full_name || user.email;
     logout.className = "alt logout";
+
+    const sections = isAdmin ? [
+      { key: "overview", label: "Обзор", icon: "home", render: adminOverview },
+      { key: "projects", label: "Проекты", icon: "grid", render: adminProjects },
+      { key: "pending", label: "На проверке", icon: "check", render: adminPending },
+      { key: "workers", label: "Сотрудники", icon: "users", render: adminWorkers }
+    ] : [
+      { key: "projects", label: "Мои проекты", icon: "grid", render: workerView }
+    ];
+    const body = h("div", { class: "content" });
+    const title = h("strong", { class: "topbar-title" });
+    const pendingBadge = h("span", { class: "nav-badge" });
+    pendingBadge.hidden = true;
+    const projectLinks = h("div", { class: "nav nav-projects" });
+    const buttons = {};
+    const markActive = key => Object.entries(buttons).forEach(([name, button]) => {
+      button.classList.toggle("active", name === key);
+      if (name === key) button.setAttribute("aria-current", "page"); else button.removeAttribute("aria-current");
+    });
+    const nav = {
+      go(key) {
+        const section = sections.find(item => item.key === key) || sections[0];
+        markActive(section.key);
+        title.textContent = section.label;
+        hideTip();
+        body.replaceChildren(h("p", { class: "muted" }, "Загрузка…"));
+        return section.render(body, user, nav);
+      },
+      openProject(project) {
+        markActive("projects");
+        title.textContent = "Проекты";
+        hideTip();
+        return projectView(body, project, () => nav.go("projects"), user);
+      },
+      setPending(count) {
+        pendingBadge.hidden = !count;
+        pendingBadge.textContent = count ? String(count) : "";
+        pendingBadge.setAttribute("aria-label", "Ждут решения: " + count);
+      },
+      setProjects(projects) {
+        projectLinks.replaceChildren(
+          h("span", { class: "nav-heading" }, "Проекты"),
+          ...projects.slice(0, 8).map(project => h("button", {
+            type: "button", class: "nav-item nav-project", onclick: () => nav.openProject(project)
+          }, h("span", { class: "nav-dot", "aria-hidden": "true" }), h("span", { class: "nav-label" }, project.name))));
+        projectLinks.hidden = !projects.length;
+      }
+    };
+    projectLinks.hidden = true;
+
     const sidebar = h("aside", { class: "sidebar" },
       h("div", { class: "brand" }, h("span", { class: "brand-mark", "aria-hidden": "true" }, "B"), "Bez"),
       h("nav", { class: "nav", "aria-label": "Разделы" },
-        h("button", { type: "button", class: "nav-item active", onclick: () => renderHome(user) },
-          icon("grid"), isAdmin ? "Проекты" : "Мои проекты")),
-      h("div", { class: "sidebar-user" },
-        avatar(displayName),
-        h("div", { class: "sidebar-user-text" },
-          h("strong", {}, displayName),
-          h("span", { class: "muted" }, isAdmin ? "Администратор" : "Сотрудник")),
-        logout));
-    const body = h("div", { class: "content" });
-    show(h("div", { class: "shell" }, sidebar, h("main", { class: "main" }, body)));
-    if (isAdmin) await adminView(body, user); else await workerView(body, user);
+        h("span", { class: "nav-heading" }, "Меню"),
+        ...sections.map(section => (buttons[section.key] = h("button", {
+          type: "button", class: "nav-item", onclick: () => nav.go(section.key)
+        }, icon(section.icon), h("span", { class: "nav-label" }, section.label),
+        section.key === "pending" ? pendingBadge : "")))),
+      isAdmin ? projectLinks : "",
+      h("div", { class: "sidebar-foot" },
+        themeToggle(),
+        h("div", { class: "sidebar-user" },
+          avatar(displayName),
+          h("div", { class: "sidebar-user-text" },
+            h("strong", {}, displayName),
+            h("span", { class: "muted" }, isAdmin ? "Администратор" : "Сотрудник")),
+          logout)));
+    const topbar = h("header", { class: "topbar" },
+      title,
+      h("span", { class: "muted" }, new Date().toLocaleDateString("ru-RU", { weekday: "long", day: "numeric", month: "long" })));
+    show(h("div", { class: "shell" }, sidebar, h("main", { class: "main" }, topbar, body)));
+    await nav.go(sections[0].key);
+  }
+
+  // ---------- Admin: shared data for overview, projects and review pages ----------
+  async function loadAdminData(nav) {
+    const [projectsResult, contractsResult, expensesResult, peopleResult] = await Promise.all([
+      sb.from("projects").select("id, name, created_at").order("created_at", { ascending: false }),
+      sb.from("project_contracts").select("project_id, amount"),
+      fetchAll("expenses", "id, project_id, worker_id, amount, reason, status, proof_path, created_at"),
+      sb.from("profiles").select("id, full_name, role")
+    ]);
+    const projects = projectsResult.data || [];
+    const contracts = contractsResult.error ? [] : (contractsResult.data || []);
+    const expenses = expensesResult.error ? [] : (expensesResult.data || []);
+    const people = peopleResult.data || [];
+    const counted = expenses.filter(expense => expense.status !== "rejected");
+    const pending = expenses.filter(expense => expense.status === "pending");
+    const spentBy = {}, pendingBy = {};
+    counted.forEach(expense => { spentBy[expense.project_id] = (spentBy[expense.project_id] || 0) + Number(expense.amount || 0); });
+    pending.forEach(expense => { pendingBy[expense.project_id] = (pendingBy[expense.project_id] || 0) + 1; });
+    const contractTotal = contracts.reduce((total, item) => total + Number(item.amount || 0), 0);
+    const spentOnContracts = contracts.reduce((total, item) => total + (spentBy[item.project_id] || 0), 0);
+    nav.setPending(pending.length);
+    nav.setProjects(projects);
+    return {
+      projects, contracts, expenses, people, counted, pending, spentBy, pendingBy, contractTotal, spentOnContracts,
+      projectsError: projectsResult.error, contractsError: contractsResult.error, expensesError: expensesResult.error,
+      nameOf: id => (people.find(person => person.id === id) || {}).full_name || "Без имени",
+      projectName: id => (projects.find(project => project.id === id) || {}).name || "Проект",
+      contractOf: id => contracts.find(item => item.project_id === id)
+    };
+  }
+  function contractNotices(data) {
+    const notices = [];
+    if (data.projectsError) notices.push(h("p", { class: "error" }, "Не удалось загрузить проекты"));
+    if (contractTableMissing(data.contractsError)) {
+      notices.push(h("p", { class: "notice" }, "Контракты пока недоступны: выполните project-contract.sql в Supabase SQL Editor."));
+    } else if (data.contractsError) {
+      notices.push(h("p", { class: "error" }, "Не удалось загрузить контракты: " + data.contractsError.message));
+    }
+    if (data.expensesError) notices.push(h("p", { class: "error" }, "Не удалось загрузить расходы для подсчёта остатка"));
+    return notices;
+  }
+  const dateTime = value => new Date(value).toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
+  function dataTable(headers, rows, emptyText) {
+    return h("div", { class: "table-wrap" },
+      h("table", {},
+        h("thead", {}, h("tr", {}, ...headers.map(header => h("th", {}, header)))),
+        h("tbody", {}, rows.length ? rows : [
+          h("tr", {}, h("td", { colspan: String(headers.length), class: "muted" }, emptyText))
+        ])));
+  }
+
+  // One pending expense with approve / reject. onDone runs after the decision is saved.
+  function decisionCard(expense, workerName, subtitle, onDone) {
+    const comment = h("input", {
+      type: "text",
+      maxlength: "300",
+      placeholder: "Комментарий (для отклонения)",
+      "aria-label": "Комментарий к расходу"
+    });
+    const error = h("p", { class: "error" });
+    const approve = h("button", { type: "button", onclick: () => decide("approved") }, "Одобрить");
+    const reject = h("button", { type: "button", class: "alt", onclick: () => decide("rejected") }, "Отклонить");
+
+    async function decide(status) {
+      error.textContent = "";
+      approve.disabled = true;
+      reject.disabled = true;
+      const { error: updateError } = await sb.from("expenses")
+        .update({
+          status,
+          admin_comment: status === "rejected" ? (comment.value.trim() || null) : null
+        })
+        .eq("id", expense.id)
+        .eq("status", "pending");
+      if (updateError) {
+        error.textContent = "Не удалось сохранить решение: " + updateError.message;
+        approve.disabled = false;
+        reject.disabled = false;
+        return;
+      }
+      await onDone();
+    }
+
+    return h("div", { class: "pending-item" },
+      h("div", { class: "person-row" },
+        avatar(workerName),
+        h("div", { class: "person-text" },
+          h("strong", {}, workerName),
+          h("span", { class: "muted" }, subtitle)),
+        h("strong", { class: "amount-out" }, "−" + som(Number(expense.amount)))),
+      proofButton(expense.proof_path),
+      comment,
+      h("div", { class: "row" }, approve, reject),
+      error);
+  }
+
+  // ---------- Admin: overview ----------
+  async function adminOverview(body, user, nav) {
+    const data = await loadAdminData(nav);
+    const now = new Date();
+    const months = [];
+    for (let back = 5; back >= 0; back -= 1) {
+      const start = new Date(now.getFullYear(), now.getMonth() - back, 1);
+      months.push({
+        key: start.getFullYear() + "-" + start.getMonth(),
+        label: start.toLocaleDateString("ru-RU", { month: "short" }).replace(".", ""),
+        note: start.toLocaleDateString("ru-RU", { month: "long", year: "numeric" }),
+        value: 0
+      });
+    }
+    data.counted.forEach(expense => {
+      const at = new Date(expense.created_at);
+      const month = months.find(item => item.key === at.getFullYear() + "-" + at.getMonth());
+      if (month) month.value += Number(expense.amount || 0);
+    });
+    const noContracts = !!data.contractsError;
+    const charts = h("div", { class: "chart-grid" },
+      panel("Расходы по месяцам", columns(months, "Расходы сотрудников за последние шесть месяцев")));
+    if (!noContracts && data.contractTotal > 0) {
+      const contracted = new Set(data.contracts.map(item => item.project_id));
+      const onContracts = data.counted.filter(expense => contracted.has(expense.project_id));
+      const pendingSum = onContracts.filter(expense => expense.status === "pending")
+        .reduce((total, expense) => total + Number(expense.amount || 0), 0);
+      const approvedSum = onContracts.reduce((total, expense) => total + Number(expense.amount || 0), 0) - pendingSum;
+      charts.append(panel("Бюджет всех контрактов", donut([
+        { label: "Одобренные расходы", value: approvedSum, color: "var(--s1)" },
+        { label: "Ждут решения", value: pendingSum, color: "var(--s2)" },
+        { label: "Остаток", value: Math.max(0, data.contractTotal - data.spentOnContracts), color: "var(--rest)" }
+      ], percent(data.spentOnContracts, data.contractTotal), "израсходовано", "Как израсходованы все контракты")));
+    }
+    const recent = data.expenses.slice().sort((a, b) => new Date(b.created_at) - new Date(a.created_at)).slice(0, 8);
+    const reviewLink = h("button", { type: "button", class: "alt small", onclick: () => nav.go("pending") }, "Открыть проверку");
+
+    body.replaceChildren(
+      ...contractNotices(data),
+      h("div", { class: "stats" },
+        stat("Остаток по контрактам", noContracts ? "—" : som(data.contractTotal - data.spentOnContracts),
+          noContracts ? "" : meter(data.spentOnContracts, data.contractTotal), "accent", "wallet"),
+        stat("Сумма контрактов", noContracts ? "—" : som(data.contractTotal), "", "", "doc"),
+        stat("Расходы за этот месяц", som(months[months.length - 1].value), "", "", "out"),
+        stat("На проверке", String(data.pending.length), data.pending.length ? reviewLink : "", "", "check")),
+      charts,
+      panel("Последние расходы", dataTable(["Дата", "Проект", "Сотрудник", "Причина", "Статус", "Сумма"], recent.map(expense =>
+        h("tr", {},
+          h("td", {}, dateTime(expense.created_at)),
+          h("td", {}, data.projectName(expense.project_id)),
+          h("td", {}, data.nameOf(expense.worker_id)),
+          h("td", {}, expense.reason),
+          h("td", {}, statusTag(expense.status)),
+          h("td", { class: "num" + (expense.status === "rejected" ? " muted" : "") },
+            (expense.status === "rejected" ? "" : "−") + som(Number(expense.amount))))), "Расходов пока нет.")));
   }
 
   // ---------- Admin: all projects + create ----------
-  async function adminView(body, user) {
-    const grid = h("div", { class: "project-grid" }, h("p", { class: "muted" }, "Загрузка…"));
-    const summary = h("div", { class: "stats" });
-    const charts = h("div", { class: "chart-grid" });
+  async function adminProjects(body, user, nav) {
     const msg = h("p", { class: "error" });
     const name = h("input", { type: "text", placeholder: "Название проекта, напр. Кайнар", maxlength: "80", "aria-label": "Название проекта", required: "" });
     const contract = h("input", { type: "number", min: "0", step: "0.01", placeholder: "Сумма контракта, сом", "aria-label": "Сумма контракта, сом" });
@@ -436,92 +672,27 @@
         await load();
       }
     }, name, contract, create);
+    const grid = h("div", { class: "project-grid" }, h("p", { class: "muted" }, "Загрузка…"));
 
     async function load() {
-      const [
-        { data: projects, error },
-        { data: contracts, error: contractsError },
-        { data: expenses, error: expensesError }
-      ] = await Promise.all([
-        sb.from("projects").select("id, name, created_at").order("created_at", { ascending: false }),
-        sb.from("project_contracts").select("project_id, amount"),
-        fetchAll("expenses", "id, project_id, amount, status, created_at")
-      ]);
-      grid.replaceChildren();
-      summary.replaceChildren();
-      charts.replaceChildren();
-      if (error) { grid.append(h("p", { class: "error" }, "Не удалось загрузить проекты")); return; }
-      if (!projects.length) { grid.append(h("p", { class: "muted" }, "Проектов пока нет. Создайте первый.")); return; }
-
-      const missingTable = contractTableMissing(contractsError);
-      const spentBy = {};
-      (expensesError ? [] : expenses)
-        .filter(expense => expense.status !== "rejected")
-        .forEach(expense => { spentBy[expense.project_id] = (spentBy[expense.project_id] || 0) + Number(expense.amount || 0); });
-      const contractOf = id => (contracts || []).find(item => item.project_id === id);
-      const pendingBy = {};
-      (expensesError ? [] : expenses)
-        .filter(expense => expense.status === "pending")
-        .forEach(expense => { pendingBy[expense.project_id] = (pendingBy[expense.project_id] || 0) + 1; });
-
-      const contractTotal = (contracts || []).reduce((total, item) => total + Number(item.amount || 0), 0);
-      const spentOnContracts = (contracts || []).reduce((total, item) => total + (spentBy[item.project_id] || 0), 0);
-      summary.append(
-        stat("Остаток по контрактам", contractsError ? "—" : som(contractTotal - spentOnContracts),
-          contractsError ? "" : meter(spentOnContracts, contractTotal), "accent", "wallet"),
-        stat("Сумма контрактов", contractsError ? "—" : som(contractTotal), "", "", "doc"),
-        stat("Проектов", String(projects.length), "", "", "grid"));
-
-      // ----- Charts: spending by month, and how all contracts are used -----
-      const counted = (expensesError ? [] : expenses).filter(expense => expense.status !== "rejected");
-      const months = [];
-      const now = new Date();
-      for (let back = 5; back >= 0; back -= 1) {
-        const start = new Date(now.getFullYear(), now.getMonth() - back, 1);
-        months.push({
-          key: start.getFullYear() + "-" + start.getMonth(),
-          label: start.toLocaleDateString("ru-RU", { month: "short" }).replace(".", ""),
-          note: start.toLocaleDateString("ru-RU", { month: "long", year: "numeric" }),
-          value: 0
-        });
+      const data = await loadAdminData(nav);
+      grid.replaceChildren(...contractNotices(data));
+      if (!data.projects.length && !data.projectsError) {
+        grid.append(h("p", { class: "muted" }, "Проектов пока нет. Создайте первый."));
+        return;
       }
-      counted.forEach(expense => {
-        const at = new Date(expense.created_at);
-        const month = months.find(item => item.key === at.getFullYear() + "-" + at.getMonth());
-        if (month) month.value += Number(expense.amount || 0);
-      });
-      charts.append(panel("Расходы по месяцам", columns(months, "Расходы сотрудников за последние шесть месяцев")));
-      if (!contractsError && contractTotal > 0) {
-        const contracted = new Set((contracts || []).map(item => item.project_id));
-        const onContracts = counted.filter(expense => contracted.has(expense.project_id));
-        const pendingSum = onContracts.filter(expense => expense.status === "pending")
-          .reduce((total, expense) => total + Number(expense.amount || 0), 0);
-        const approvedSum = onContracts.reduce((total, expense) => total + Number(expense.amount || 0), 0) - pendingSum;
-        charts.append(panel("Бюджет всех контрактов", donut([
-          { label: "Одобренные расходы", value: approvedSum, color: "var(--s1)" },
-          { label: "Ждут решения", value: pendingSum, color: "var(--s2)" },
-          { label: "Остаток", value: Math.max(0, contractTotal - spentOnContracts), color: "var(--rest)" }
-        ], percent(spentOnContracts, contractTotal), "израсходовано", "Как израсходованы все контракты")));
-      }
-      if (missingTable) {
-        grid.append(h("p", { class: "notice" }, "Контракты пока недоступны: выполните project-contract.sql в Supabase SQL Editor."));
-      } else if (contractsError) {
-        grid.append(h("p", { class: "error" }, "Не удалось загрузить контракты: " + contractsError.message));
-      }
-      if (expensesError) grid.append(h("p", { class: "error" }, "Не удалось загрузить расходы для подсчёта остатка"));
-
-      projects.forEach(p => {
-        const item = contractOf(p.id);
-        const spent = spentBy[p.id] || 0;
+      data.projects.forEach(p => {
+        const item = data.contractOf(p.id);
+        const spent = data.spentBy[p.id] || 0;
         const total = item ? Number(item.amount || 0) : 0;
         const badges = [];
-        if (pendingBy[p.id]) badges.push(h("span", { class: "tag tag-pending" }, "Ждут решения: " + pendingBy[p.id]));
+        if (data.pendingBy[p.id]) badges.push(h("span", { class: "tag tag-pending" }, "Ждут решения: " + data.pendingBy[p.id]));
         const budgetBadge = item ? budgetTag(total, spent) : null;
         if (budgetBadge) badges.push(budgetBadge);
         grid.append(h("button", {
           type: "button",
           class: "project-card",
-          onclick: () => projectView(body, p, () => renderHome(user), user)
+          onclick: () => nav.openProject(p)
         },
           h("span", { class: "project-card-head" },
             h("strong", {}, p.name),
@@ -541,13 +712,64 @@
       });
     }
 
-    body.append(
-      h("div", { class: "page-head" }, h("h1", {}, "Проекты")),
-      summary,
-      charts,
-      panel("Новый проект", form, msg),
-      grid);
+    body.replaceChildren(panel("Новый проект", form, msg), grid);
     await load();
+  }
+
+  // ---------- Admin: every expense waiting for a decision, across projects ----------
+  async function adminPending(body, user, nav) {
+    const data = await loadAdminData(nav);
+    const queue = data.pending.slice().sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+    const total = queue.reduce((sum, expense) => sum + Number(expense.amount || 0), 0);
+    body.replaceChildren(
+      ...contractNotices(data).filter(node => node.className === "error"),
+      h("div", { class: "stats" },
+        stat("Ждут решения", String(queue.length), "", "accent", "check"),
+        stat("На сумму", som(total), "", "", "out")),
+      panel("Расходы на проверке",
+        ...(queue.length
+          ? queue.map(expense => decisionCard(expense, data.nameOf(expense.worker_id),
+            data.projectName(expense.project_id) + " · " + expense.reason + " · " + dateTime(expense.created_at),
+            () => nav.go("pending")))
+          : [h("p", { class: "muted empty" }, "Все расходы проверены.")])));
+  }
+
+  // ---------- Admin: workers and the money they hold ----------
+  async function adminWorkers(body, user, nav) {
+    const [data, balancesResult, membersResult] = await Promise.all([
+      loadAdminData(nav),
+      sb.from("balances").select("worker_id, project_id, balance"),
+      sb.from("project_members").select("project_id, user_id")
+    ]);
+    const workers = data.people.filter(person => person.role === "worker")
+      .sort((a, b) => (a.full_name || "").localeCompare(b.full_name || "", "ru"));
+    const balances = balancesResult.data || [];
+    const members = membersResult.data || [];
+    const rows = workers.map(worker => {
+      const inProjects = members.filter(member => member.user_id === worker.id).map(member => data.projectName(member.project_id));
+      const spent = data.counted.filter(expense => expense.worker_id === worker.id)
+        .reduce((sum, expense) => sum + Number(expense.amount || 0), 0);
+      const onHand = balances.filter(item => item.worker_id === worker.id)
+        .reduce((sum, item) => sum + Number(item.balance || 0), 0);
+      return { worker, inProjects, spent, onHand };
+    });
+    body.replaceChildren(
+      balancesResult.error || membersResult.error
+        ? h("p", { class: "error" }, "Не удалось загрузить балансы или состав проектов")
+        : "",
+      h("div", { class: "stats" },
+        stat("Сотрудников", String(workers.length), "", "accent", "users"),
+        stat("На руках у сотрудников", som(rows.reduce((sum, row) => sum + row.onHand, 0)), "", "", "wallet"),
+        stat("Расходы сотрудников", som(rows.reduce((sum, row) => sum + row.spent, 0)), "", "", "out")),
+      panel("Сотрудники", dataTable(["Сотрудник", "Проекты", "Расходы", "На руках"], rows.map(row =>
+        h("tr", {},
+          h("td", {}, h("div", { class: "person-row" }, avatar(row.worker.full_name || "Без имени"),
+            h("strong", {}, row.worker.full_name || "Без имени"))),
+          h("td", {}, row.inProjects.length ? row.inProjects.join(", ") : h("span", { class: "muted" }, "Нет проектов")),
+          h("td", { class: "num" }, som(row.spent)),
+          h("td", { class: "num" + (row.onHand < 0 ? " negative" : "") }, som(row.onHand)))),
+      "Сотрудников пока нет. Создайте пользователя с ролью worker в Supabase.")),
+      h("p", { class: "hint" }, "Чтобы добавить сотрудника в проект, откройте проект и выберите его в списке."));
   }
 
   // ---------- Admin: one project page ----------
@@ -633,49 +855,8 @@
 
     const currentMembers = members.map(member => member.user_id);
 
-    function pendingCard(expense) {
-      const comment = h("input", {
-        type: "text",
-        maxlength: "300",
-        placeholder: "Комментарий (для отклонения)",
-        "aria-label": "Комментарий к расходу"
-      });
-      const error = h("p", { class: "error" });
-      const approve = h("button", { type: "button", onclick: () => decide("approved") }, "Одобрить");
-      const reject = h("button", { type: "button", class: "alt", onclick: () => decide("rejected") }, "Отклонить");
-
-      async function decide(status) {
-        error.textContent = "";
-        approve.disabled = true;
-        reject.disabled = true;
-        const { error: updateError } = await sb.from("expenses")
-          .update({
-            status,
-            admin_comment: status === "rejected" ? (comment.value.trim() || null) : null
-          })
-          .eq("id", expense.id)
-          .eq("status", "pending");
-        if (updateError) {
-          error.textContent = "Не удалось сохранить решение: " + updateError.message;
-          approve.disabled = false;
-          reject.disabled = false;
-          return;
-        }
-        await projectView(body, project, back, user);
-      }
-
-      return h("div", { class: "pending-item" },
-        h("div", { class: "person-row" },
-          avatar(nameOf(expense.worker_id)),
-          h("div", { class: "person-text" },
-            h("strong", {}, nameOf(expense.worker_id)),
-            h("span", { class: "muted" }, expense.reason + " · " + date(expense.created_at))),
-          h("strong", { class: "amount-out" }, "−" + money(Number(expense.amount)))),
-        proofButton(expense.proof_path),
-        comment,
-        h("div", { class: "row" }, approve, reject),
-        error);
-    }
+    const pendingCard = expense => decisionCard(expense, nameOf(expense.worker_id),
+      expense.reason + " · " + date(expense.created_at), () => projectView(body, project, back, user));
 
     // ----- Contract (admin only; protected by RLS in project-contract.sql) -----
     const contractAmount = contract ? Number(contract.amount || 0) : null;
