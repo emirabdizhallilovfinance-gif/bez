@@ -87,6 +87,28 @@
       "aria-label": "Израсходовано от контракта"
     }, h("span", { style: "width:" + share.toFixed(1) + "%" }));
   }
+  // Warns the admin when a contract is overspent or nearly used up (less than 20% left).
+  function budgetTag(total, spent) {
+    if (!(total > 0)) return null;
+    if (spent > total) return h("span", { class: "tag tag-rejected" }, "Перерасход " + som(spent - total));
+    if (total - spent < total * 0.2) return h("span", { class: "tag tag-pending" }, "Осталось меньше 20%");
+    return null;
+  }
+  function csvCell(value) {
+    let text = value === null || value === undefined ? "" : String(value);
+    // Stop spreadsheet apps from running text that looks like a formula
+    if (/^[=+\-@\t\r]/.test(text)) text = "'" + text;
+    return '"' + text.replace(/"/g, '""') + '"';
+  }
+  function downloadCsv(filename, rows) {
+    const content = "﻿" + rows.map(row => row.join(";")).join("\r\n");
+    const url = URL.createObjectURL(new Blob([content], { type: "text/csv;charset=utf-8" }));
+    const link = h("a", { href: url, download: filename });
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
   // Contract table is created by project-contract.sql; until it exists, show a hint instead of failing.
   const contractTableMissing = error => !!error && (error.code === "42P01" || error.code === "PGRST205"
     || /project_contracts/.test(error.message || ""));
@@ -261,6 +283,10 @@
         .filter(expense => expense.status !== "rejected")
         .forEach(expense => { spentBy[expense.project_id] = (spentBy[expense.project_id] || 0) + Number(expense.amount || 0); });
       const contractOf = id => (contracts || []).find(item => item.project_id === id);
+      const pendingBy = {};
+      (expensesError ? [] : expenses)
+        .filter(expense => expense.status === "pending")
+        .forEach(expense => { pendingBy[expense.project_id] = (pendingBy[expense.project_id] || 0) + 1; });
 
       const contractTotal = (contracts || []).reduce((total, item) => total + Number(item.amount || 0), 0);
       const spentOnContracts = (contracts || []).reduce((total, item) => total + (spentBy[item.project_id] || 0), 0);
@@ -280,6 +306,10 @@
         const item = contractOf(p.id);
         const spent = spentBy[p.id] || 0;
         const total = item ? Number(item.amount || 0) : 0;
+        const badges = [];
+        if (pendingBy[p.id]) badges.push(h("span", { class: "tag tag-pending" }, "Ждут решения: " + pendingBy[p.id]));
+        const budgetBadge = item ? budgetTag(total, spent) : null;
+        if (budgetBadge) badges.push(budgetBadge);
         grid.append(h("button", {
           type: "button",
           class: "project-card",
@@ -298,7 +328,8 @@
             : [
               h("span", { class: "project-card-label muted" }, "Контракт не задан"),
               h("span", { class: "muted" }, "Расходы: " + som(spent))
-            ]));
+            ],
+          badges.length ? h("span", { class: "badges" }, ...badges) : ""));
       });
     }
 
@@ -313,10 +344,11 @@
   // ---------- Admin: one project page ----------
   async function projectView(body, project, back, user) {
     const list = h("div", { class: "project-layout" }, h("p", { class: "muted" }, "Загрузка…"));
+    const headRow = h("div", { class: "page-head-row" }, h("h1", {}, project.name));
     body.replaceChildren(
       h("div", { class: "page-head" },
         h("button", { type: "button", class: "alt back", onclick: back }, "← Все проекты"),
-        h("h1", {}, project.name)),
+        headRow),
       list);
 
     async function loadAllRows(table, columns) {
@@ -488,6 +520,67 @@
         contractLeft < 0 ? "accent negative" : "accent");
     }
 
+    // ----- Spending by worker -----
+    const spentByWorker = {};
+    expenses.filter(expense => expense.status !== "rejected").forEach(expense => {
+      const entry = spentByWorker[expense.worker_id] || (spentByWorker[expense.worker_id] = { total: 0, count: 0 });
+      entry.total += Number(expense.amount || 0);
+      entry.count += 1;
+    });
+    const shareBase = contractAmount > 0 ? contractAmount : deductedTotal;
+    const shareLabel = contractAmount > 0 ? "% контракта" : "% расходов";
+    const breakdown = Object.entries(spentByWorker).sort((a, b) => b[1].total - a[1].total).map(([id, entry]) =>
+      h("div", { class: "breakdown-row" },
+        h("div", { class: "person-row" },
+          avatar(nameOf(id)),
+          h("div", { class: "person-text" },
+            h("strong", {}, nameOf(id)),
+            h("span", { class: "muted" }, "Расходов: " + entry.count + " · "
+              + (shareBase > 0 ? (entry.total / shareBase * 100).toLocaleString("ru-RU", { maximumFractionDigits: 1 }) : "0") + shareLabel)),
+          h("strong", { class: "amount-out" }, "−" + money(entry.total))),
+        meter(entry.total, shareBase)));
+
+    // ----- CSV report for the accountant -----
+    const csvNumber = value => String(Math.round(Number(value || 0) * 100) / 100).replace(".", ",");
+    const exportButton = h("button", {
+      type: "button",
+      class: "alt",
+      onclick: () => {
+        const rows = [
+          ...transfers.map(transfer => ({
+            at: transfer.created_at,
+            cells: [csvCell(date(transfer.created_at)), csvCell("Пополнение"), csvCell(nameOf(transfer.worker_id)),
+              csvCell(transfer.note || ""), csvCell(""), csvNumber(transfer.amount), csvNumber(0)]
+          })),
+          ...expenses.map(expense => ({
+            at: expense.created_at,
+            cells: [csvCell(date(expense.created_at)), csvCell("Расход"), csvCell(nameOf(expense.worker_id)),
+              csvCell(expense.reason + (expense.admin_comment ? " (" + expense.admin_comment + ")" : "")),
+              csvCell(statusText(expense.status)), csvNumber(expense.amount),
+              csvNumber(expense.status === "rejected" ? 0 : -Number(expense.amount || 0))]
+          }))
+        ].sort((a, b) => new Date(a.at) - new Date(b.at)).map(row => row.cells);
+        const summaryRows = [
+          [],
+          [csvCell("Проект"), csvCell(project.name)],
+          [csvCell("Контракт, сом"), contractAmount === null ? csvCell("не задан") : csvNumber(contractAmount)],
+          [csvCell("Расходы (без отклонённых), сом"), csvNumber(deductedTotal)],
+          [csvCell("Остаток контракта, сом"), contractAmount === null ? csvCell("—") : csvNumber(contractLeft)],
+          [csvCell("Выдано сотрудникам, сом"), csvNumber(addedTotal)]
+        ];
+        const safeName = project.name.replace(/[^\p{L}\p{N}]+/gu, "-").replace(/^-+|-+$/g, "") || "project";
+        downloadCsv("bez-" + safeName + "-" + new Date().toISOString().slice(0, 10) + ".csv", [
+          ["Дата", "Тип", "Сотрудник", "Описание", "Статус", "Сумма, сом", "Списано с контракта, сом"].map(csvCell),
+          ...rows,
+          ...summaryRows
+        ]);
+      }
+    }, "Скачать отчёт (CSV)");
+    headRow.append(exportButton);
+
+    const budgetWarning = contractAmount === null ? null : budgetTag(contractAmount, deductedTotal);
+    if (budgetWarning) contractStat.append(budgetWarning);
+
     const pendingExpenses = expenses.filter(expense => expense.status === "pending");
     list.replaceChildren(
       h("div", { class: "stats" },
@@ -502,6 +595,8 @@
         ...(pendingExpenses.length
           ? pendingExpenses.map(pendingCard)
           : [h("p", { class: "muted empty" }, "Нет расходов, ожидающих решения.")])),
+      panel("Расходы по сотрудникам",
+        ...(breakdown.length ? breakdown : [h("p", { class: "muted empty" }, "Расходов пока нет.")])),
       panel("История пополнений", table(["Дата", "Сотрудник", "Описание", "Подтверждение", "Сумма"], transfers.map(transfer =>
         h("tr", {},
           h("td", {}, date(transfer.created_at)),

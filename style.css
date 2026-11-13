@@ -116,6 +116,14 @@ input:focus-visible, button:focus-visible { outline: 2px solid var(--accent); ou
 .content { max-width: 1120px; margin: 0 auto; display: grid; gap: 20px; }
 .page-head { display: grid; gap: 10px; justify-items: start; }
 .back { padding: 6px 12px; font-size: 0.875rem; }
+.page-head-row {
+  display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center;
+  gap: 12px; width: 100%;
+}
+.badges { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.stat .tag { justify-self: start; }
+.breakdown-row { display: grid; gap: 8px; }
+.breakdown-row + .breakdown-row { padding-top: 12px; border-top: 1px solid var(--line); }
 
 .avatar {
   display: inline-grid; place-items: center; flex: none;
