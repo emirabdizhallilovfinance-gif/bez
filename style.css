@@ -220,12 +220,7 @@ input:focus-visible, select:focus-visible, button:focus-visible { outline: 2px s
 
 .transaction-form { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
 .transaction-form button { justify-self: start; }
-.transaction-form .proof-file,
 .transaction-form .error { grid-column: 1 / -1; }
-.proof-file {
-  padding: 8px; font-size: 0.8125rem; color: var(--ink-2);
-  background: var(--surface); border: 1px dashed var(--line); border-radius: var(--radius-sm);
-}
 
 /* ---------- Tables ---------- */
 .table-wrap { overflow-x: auto; margin: 0 -4px; }

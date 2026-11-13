@@ -58,7 +58,6 @@
   }
 
   const sb = supabase.createClient(cfg.SUPABASE_URL, cfg.SUPABASE_KEY);
-  const maxProofSize = 10 * 1024 * 1024;
   const statusText = status => ({
     pending: "Ожидает решения",
     approved: "Одобрено",
@@ -306,51 +305,9 @@
     }
   }
 
-  function proofFileInput(label) {
-    return h("input", {
-      class: "proof-file",
-      type: "file",
-      accept: ".png,.jpg,.jpeg,image/png,image/jpeg",
-      "aria-label": label,
-      required: ""
-    });
-  }
-
-  async function uploadProof(file, workerId, projectId) {
-    if (!file) throw new Error("Выберите скриншот или фото-подтверждение");
-    if (file.size > maxProofSize) throw new Error("Размер файла не должен превышать 10 МБ");
-
-    const extension = (file.name.split(".").pop() || "").toLowerCase();
-    const bytes = new Uint8Array(await file.slice(0, 8).arrayBuffer());
-    const isPng = extension === "png" && bytes.length === 8
-      && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47
-      && bytes[4] === 0x0d && bytes[5] === 0x0a && bytes[6] === 0x1a && bytes[7] === 0x0a;
-    const isJpeg = (extension === "jpg" || extension === "jpeg")
-      && bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
-    if (!isPng && !isJpeg) throw new Error("Разрешены только файлы PNG, JPG и JPEG");
-    if (file.type && file.type !== (isPng ? "image/png" : "image/jpeg")) {
-      throw new Error("Тип файла не соответствует его содержимому");
-    }
-
-    const path = workerId + "/" + projectId + "/" + crypto.randomUUID() + "." + extension;
-    const { error } = await sb.storage.from("proofs").upload(path, file, {
-      contentType: isPng ? "image/png" : "image/jpeg",
-      upsert: false
-    });
+  async function insertRow(table, values) {
+    const { error } = await sb.from(table).insert(values);
     if (error) throw error;
-    return path;
-  }
-
-  async function insertWithProof(table, values, file, workerId, projectId) {
-    const path = await uploadProof(file, workerId, projectId);
-    const { error } = await sb.from(table).insert({ ...values, proof_path: path });
-    if (!error) return;
-
-    const { error: cleanupError } = await sb.storage.from("proofs").remove([path]);
-    if (cleanupError) {
-      throw new Error(error.message + "; не удалось удалить незарегистрированный файл: " + cleanupError.message);
-    }
-    throw error;
   }
 
   // ---------- Login ----------
@@ -1104,7 +1061,13 @@
         "aria-label": "Сумма для " + nameOf(id),
         required: ""
       });
-      const additionProof = proofFileInput("Подтверждение пополнения для " + nameOf(id));
+      const additionNote = h("input", {
+        type: "text",
+        maxlength: "300",
+        placeholder: "Описание пополнения",
+        "aria-label": "Описание пополнения для " + nameOf(id),
+        required: ""
+      });
       const additionError = h("p", { class: "error" });
       const additionSubmit = h("button", { type: "submit" }, "Добавить деньги");
       const additionForm = h("form", {
@@ -1112,21 +1075,22 @@
         onsubmit: async ev => {
           ev.preventDefault();
           const value = Number(amount.value);
-          if (!Number.isFinite(value) || value <= 0) {
-            additionError.textContent = "Введите сумму больше нуля";
+          const note = additionNote.value.trim();
+          if (!Number.isFinite(value) || value <= 0 || !note) {
+            additionError.textContent = "Введите сумму больше нуля и описание пополнения";
             return;
           }
 
           additionError.textContent = "";
           additionSubmit.disabled = true;
           try {
-            await insertWithProof("transfers", {
+            await insertRow("transfers", {
               project_id: project.id,
               worker_id: id,
               amount: value,
-              note: "Пополнение баланса",
+              note,
               created_by: user.id
-            }, additionProof.files[0], id, project.id);
+            });
             await projectView(body, project, back, user);
           } catch (dbError) {
             const code = dbError.code ? " (" + dbError.code + ")" : "";
@@ -1134,7 +1098,7 @@
             additionSubmit.disabled = false;
           }
         }
-      }, amount, additionProof, additionSubmit, additionError);
+      }, amount, additionNote, additionSubmit, additionError);
 
       const deductionAmount = h("input", {
         type: "number",
@@ -1151,7 +1115,6 @@
         "aria-label": "Причина списания для " + nameOf(id),
         required: ""
       });
-      const deductionProof = proofFileInput("Подтверждение списания для " + nameOf(id));
       const deductionError = h("p", { class: "error" });
       const deductionSubmit = h("button", { type: "submit" }, "Списать деньги");
       const deductionForm = h("form", {
@@ -1168,13 +1131,13 @@
           deductionError.textContent = "";
           deductionSubmit.disabled = true;
           try {
-            await insertWithProof("expenses", {
+            await insertRow("expenses", {
               project_id: project.id,
               worker_id: id,
               amount: value,
               reason,
               status: "approved"
-            }, deductionProof.files[0], id, project.id);
+            });
             await projectView(body, project, back, user);
           } catch (dbError) {
             const code = dbError.code ? " (" + dbError.code + ")" : "";
@@ -1182,7 +1145,7 @@
             deductionSubmit.disabled = false;
           }
         }
-      }, deductionAmount, deductionReason, deductionProof, deductionSubmit, deductionError);
+      }, deductionAmount, deductionReason, deductionSubmit, deductionError);
 
       return h("div", { class: "worker-balance" },
         h("div", { class: "person-row" },
@@ -1247,7 +1210,6 @@
       placeholder: "Причина расхода",
       required: ""
     });
-    const expenseProof = proofFileInput("Скриншот или фото-подтверждение расхода");
     const expenseError = h("p", { class: "error" });
     const expenseSubmit = h("button", { type: "submit" }, "Отправить расход");
     const expenseForm = h("form", {
@@ -1264,13 +1226,13 @@
         expenseError.textContent = "";
         expenseSubmit.disabled = true;
         try {
-          await insertWithProof("expenses", {
+          await insertRow("expenses", {
             project_id: project.project_id,
             worker_id: user.id,
             amount,
             reason,
             status: "pending"
-          }, expenseProof.files[0], user.id, project.project_id);
+          });
           await workerProjectView(body, project, user, back);
         } catch (dbError) {
           const code = dbError.code ? " (" + dbError.code + ")" : "";
@@ -1278,7 +1240,7 @@
           expenseSubmit.disabled = false;
         }
       }
-    }, expenseAmount, expenseReason, expenseProof, expenseSubmit, expenseError);
+    }, expenseAmount, expenseReason, expenseSubmit, expenseError);
     const expensesTable = h("div", { class: "table-wrap" },
       h("table", {},
         h("thead", {}, h("tr", {},
@@ -1331,7 +1293,7 @@
       panel("Мой баланс по дням", balancePoints.length
         ? lineChart(balancePoints, "Мой баланс по дням")
         : h("p", { class: "muted empty" }, "График появится после первой операции.")),
-      panel("Отправить расход с подтверждением", expenseForm),
+      panel("Отправить расход", expenseForm),
       panel("История расходов", expensesTable),
       panel("История пополнений", transfersTable));
   }
