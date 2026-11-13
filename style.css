@@ -56,7 +56,41 @@ input:focus-visible, button:focus-visible { outline: 2px solid var(--accent); ou
   background: var(--card); border: 1px solid var(--line);
   border-radius: 12px; padding: 14px 16px;
 }
+.worker-balance {
+  display: grid; gap: 10px;
+  background: var(--card); border: 1px solid var(--line);
+  border-radius: 12px; padding: 14px 16px;
+}
+.worker-balance-heading {
+  display: flex; justify-content: space-between; align-items: center; gap: 12px;
+}
+.transaction-form { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
+.transaction-form button { justify-self: start; padding: 10px 12px; }
+.transaction-form .proof-file,
+.transaction-form .error { grid-column: 1 / -1; }
+.proof-file { padding: 8px; font-size: 0.9rem; }
+.transaction-totals {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px;
+}
+.transaction-total {
+  display: grid; gap: 4px; min-width: 0;
+  background: var(--card); border: 1px solid var(--line);
+  border-radius: 12px; padding: 12px;
+}
+.transaction-total strong { overflow-wrap: anywhere; }
+.table-wrap {
+  overflow-x: auto; background: var(--card); border: 1px solid var(--line);
+  border-radius: 12px;
+}
+table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+th, td { padding: 10px 12px; border-bottom: 1px solid var(--line); text-align: left; }
+th { color: var(--muted); font-weight: 600; white-space: nowrap; }
+tbody tr:last-child td { border-bottom: 0; }
+.proof-action { display: grid; justify-items: start; gap: 2px; }
+.proof-button { padding: 8px 10px; white-space: nowrap; }
+.proof-error { min-height: 0; font-size: 0.8rem; }
 @media (max-width: 380px) {
   .worker-heading { align-items: flex-start; }
   .worker-total .muted { font-size: 0.75rem; }
+  .transaction-totals { grid-template-columns: 1fr; }
 }
