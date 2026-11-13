@@ -70,9 +70,9 @@
       title ? h("div", { class: "panel-head" }, h("h2", {}, title)) : "",
       ...content);
   }
-  function stat(label, value, extra, tone) {
+  function stat(label, value, extra, tone, iconName) {
     return h("div", { class: "stat" + (tone ? " stat-" + tone : "") },
-      h("span", { class: "stat-label" }, label),
+      h("span", { class: "stat-label" }, iconName ? h("span", { class: "stat-icon" }, icon(iconName)) : "", label),
       h("strong", { class: "stat-value" }, value),
       extra || "");
   }
@@ -87,6 +87,180 @@
       "aria-label": "Израсходовано от контракта"
     }, h("span", { style: "width:" + share.toFixed(1) + "%" }));
   }
+  // ---------- Icons & charts (inline SVG, no libraries) ----------
+  const SVG_NS = "http://www.w3.org/2000/svg";
+  function s(tag, attrs, ...kids) {
+    const e = document.createElementNS(SVG_NS, tag);
+    Object.entries(attrs || {}).forEach(([k, v]) => {
+      if (k.startsWith("on")) e.addEventListener(k.slice(2), v);
+      else e.setAttribute(k, v);
+    });
+    kids.flat().forEach(k => e.append(k));
+    return e;
+  }
+  const ICONS = {
+    wallet: "M4 7h14a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V7Zm0 0V6a2 2 0 0 1 2-2h10M16 13h1",
+    out: "M7 17 17 7M9 7h8v8",
+    in: "M17 7 7 17M15 17H7V9",
+    users: "M9 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6Zm-6 8a6 6 0 0 1 12 0M17 11a3 3 0 0 0 0-6m4 14a6 6 0 0 0-3-5.2",
+    grid: "M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z",
+    file: "M7 3h7l5 5v13H7zM14 3v5h5M10 13h6M10 17h6",
+    doc: "M6 3h12v18H6zM9 8h6M9 12h6M9 16h3"
+  };
+  const icon = name => s("svg", {
+    class: "icon", viewBox: "0 0 24 24", width: "20", height: "20", fill: "none", stroke: "currentColor",
+    "stroke-width": "1.8", "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true"
+  }, s("path", { d: ICONS[name] || "" }));
+  const SERIES = ["var(--s1)", "var(--s2)", "var(--s3)", "var(--s4)", "var(--s5)", "var(--s6)"];
+  const compact = value => Number(value || 0).toLocaleString("ru-RU", { notation: "compact", maximumFractionDigits: 1 });
+  const percent = (value, total) => (total > 0 ? value / total * 100 : 0)
+    .toLocaleString("ru-RU", { maximumFractionDigits: 1 }) + "%";
+
+  const tip = h("div", { class: "chart-tip", role: "status" });
+  tip.hidden = true;
+  function showTip(x, y, value, ...lines) {
+    tip.replaceChildren(h("strong", {}, value), ...lines.filter(Boolean).map(line => h("span", {}, line)));
+    tip.hidden = false;
+    if (!tip.isConnected) document.body.append(tip);
+    const box = tip.getBoundingClientRect();
+    tip.style.left = Math.min(window.innerWidth - box.width - 8, Math.max(8, x + 14)) + "px";
+    tip.style.top = Math.max(8, y - box.height - 14) + "px";
+  }
+  function hideTip() { tip.hidden = true; }
+  function tipOn(node, value, ...lines) {
+    node.addEventListener("pointermove", ev => showTip(ev.clientX, ev.clientY, value, ...lines));
+    node.addEventListener("pointerleave", hideTip);
+    node.addEventListener("focus", () => {
+      const box = node.getBoundingClientRect();
+      showTip(box.left + box.width / 2, box.top, value, ...lines);
+    });
+    node.addEventListener("blur", hideTip);
+  }
+
+  // Donut: parts = [{ label, value, color }]. The legend carries every name and amount.
+  function donut(parts, centerValue, centerLabel, ariaLabel) {
+    const shown = parts.filter(part => part.value > 0);
+    const total = shown.reduce((sum, part) => sum + part.value, 0);
+    const size = 168, radius = 64, width = 20, around = 2 * Math.PI * radius;
+    const svg = s("svg", { class: "donut", viewBox: "0 0 " + size + " " + size, role: "img", "aria-label": ariaLabel },
+      s("circle", { cx: size / 2, cy: size / 2, r: radius, fill: "none", stroke: "var(--track)", "stroke-width": width }));
+    const gap = shown.length > 1 ? 2 : 0;
+    let offset = 0;
+    shown.forEach(part => {
+      const length = part.value / total * around;
+      const segment = s("circle", {
+        class: "donut-seg", cx: size / 2, cy: size / 2, r: radius, fill: "none",
+        stroke: part.color, "stroke-width": width,
+        "stroke-dasharray": Math.max(0.5, length - gap) + " " + around,
+        "stroke-dashoffset": String(-offset),
+        transform: "rotate(-90 " + size / 2 + " " + size / 2 + ")",
+        tabindex: "0", role: "img",
+        "aria-label": part.label + ": " + som(part.value) + ", " + percent(part.value, total)
+      });
+      tipOn(segment, som(part.value), part.label, percent(part.value, total));
+      svg.append(segment);
+      offset += length;
+    });
+    return h("div", { class: "donut-chart" },
+      h("div", { class: "donut-wrap" }, svg,
+        h("div", { class: "donut-center" }, h("strong", {}, centerValue), h("span", { class: "muted" }, centerLabel))),
+      h("ul", { class: "legend" }, ...parts.map(part => h("li", {},
+        h("span", { class: "swatch", style: "background:" + part.color }),
+        h("span", { class: "legend-name" }, part.label),
+        h("strong", {}, som(part.value)),
+        h("span", { class: "muted" }, percent(part.value, total))))));
+  }
+
+  // Columns: items = [{ label, value, note }]
+  function columns(items, ariaLabel) {
+    const max = Math.max(1, ...items.map(item => item.value));
+    return h("div", { class: "columns", role: "group", "aria-label": ariaLabel }, ...items.map(item => {
+      const bar = h("span", { class: "column-bar", style: "height:" + (item.value / max * 100).toFixed(1) + "%" });
+      const column = h("div", { class: "column", tabindex: "0", "aria-label": item.label + ": " + som(item.value) },
+        h("span", { class: "column-value" }, item.value ? compact(item.value) : ""),
+        h("span", { class: "column-track" }, bar),
+        h("span", { class: "column-label" }, item.label));
+      tipOn(column, som(item.value), item.note || item.label);
+      return column;
+    }));
+  }
+
+  // Line over time: points = [{ t (ms), v, note }], oldest first. Stepped, because money changes at each event.
+  function lineChart(points, ariaLabel) {
+    const box = h("div", { class: "line-chart" });
+    const until = Date.now();
+    function draw() {
+      const W = Math.max(280, box.clientWidth || 600), H = 230;
+      const m = { l: 54, r: 18, t: 14, b: 28 };
+      const t0 = points[0].t, t1 = Math.max(until, points[points.length - 1].t + 1);
+      const values = points.map(point => point.v);
+      const low = Math.min(0, ...values), high = Math.max(...values, low + 1);
+      const rough = (high - low) / 3, power = Math.pow(10, Math.floor(Math.log10(rough)));
+      const step = [1, 2, 2.5, 5, 10].map(n => n * power).find(n => n >= rough) || rough;
+      const lo = Math.floor(low / step) * step, hi = Math.ceil(high / step) * step;
+      const x = t => m.l + (t - t0) / (t1 - t0) * (W - m.l - m.r);
+      const y = v => m.t + (hi - v) / (hi - lo) * (H - m.t - m.b);
+      let d = "M" + x(points[0].t).toFixed(1) + " " + y(points[0].v).toFixed(1);
+      points.slice(1).forEach(point => { d += " H" + x(point.t).toFixed(1) + " V" + y(point.v).toFixed(1); });
+      d += " H" + x(t1).toFixed(1);
+      const last = points[points.length - 1];
+      const svg = s("svg", { viewBox: "0 0 " + W + " " + H, width: W, height: H, role: "img", tabindex: "0", "aria-label": ariaLabel });
+      for (let tick = lo; tick <= hi + step / 2; tick += step) {
+        svg.append(
+          s("line", { class: "grid-line", x1: m.l, x2: W - m.r, y1: y(tick), y2: y(tick) }),
+          s("text", { class: "axis-text", x: m.l - 8, y: y(tick) + 4, "text-anchor": "end" }, compact(tick)));
+      }
+      svg.append(
+        s("text", { class: "axis-text", x: m.l, y: H - 8 }, new Date(t0).toLocaleDateString("ru-RU")),
+        s("text", { class: "axis-text", x: W - m.r, y: H - 8, "text-anchor": "end" }, "сегодня"),
+        s("path", { class: "area", d: d + " V" + y(Math.max(lo, 0)).toFixed(1) + " H" + x(t0).toFixed(1) + " Z" }),
+        s("path", { class: "line", d }));
+      const cross = s("line", { class: "cross", y1: m.t, y2: H - m.b, visibility: "hidden" });
+      const dot = s("circle", { class: "end-dot", r: 4.5, cx: x(t1), cy: y(last.v) });
+      svg.append(cross, dot);
+      let index = points.length - 1;
+      function focusPoint(i, clientX, clientY) {
+        index = Math.max(0, Math.min(points.length - 1, i));
+        const point = points[index];
+        cross.setAttribute("x1", x(point.t)); cross.setAttribute("x2", x(point.t));
+        cross.setAttribute("visibility", "visible");
+        dot.setAttribute("cx", x(point.t)); dot.setAttribute("cy", y(point.v));
+        const rect = svg.getBoundingClientRect();
+        showTip(clientX === undefined ? rect.left + x(point.t) : clientX,
+          clientY === undefined ? rect.top + y(point.v) : clientY,
+          som(point.v), new Date(point.t).toLocaleString("ru-RU"), point.note);
+      }
+      function reset() {
+        cross.setAttribute("visibility", "hidden");
+        dot.setAttribute("cx", x(t1)); dot.setAttribute("cy", y(last.v));
+        hideTip();
+      }
+      svg.addEventListener("pointermove", ev => {
+        const rect = svg.getBoundingClientRect();
+        const t = t0 + (ev.clientX - rect.left - m.l) / (W - m.l - m.r) * (t1 - t0);
+        let nearest = 0;
+        points.forEach((point, i) => { if (point.t <= t) nearest = i; });
+        focusPoint(nearest, ev.clientX, ev.clientY);
+      });
+      svg.addEventListener("pointerleave", reset);
+      svg.addEventListener("blur", reset);
+      svg.addEventListener("keydown", ev => {
+        if (ev.key === "ArrowLeft") { ev.preventDefault(); focusPoint(index - 1); }
+        if (ev.key === "ArrowRight") { ev.preventDefault(); focusPoint(index + 1); }
+      });
+      box.replaceChildren(svg);
+    }
+    if (window.ResizeObserver) {
+      let lastWidth = 0;
+      new ResizeObserver(() => {
+        if (box.clientWidth && box.clientWidth !== lastWidth) { lastWidth = box.clientWidth; draw(); }
+      }).observe(box);
+    }
+    // First paint without waiting for the observer (it can be delayed in a background tab)
+    setTimeout(() => { if (!box.firstChild) draw(); }, 0);
+    return box;
+  }
+
   // Warns the admin when a contract is overspent or nearly used up (less than 20% left).
   function budgetTag(total, spent) {
     if (!(total > 0)) return null;
@@ -210,7 +384,7 @@
       h("div", { class: "brand" }, h("span", { class: "brand-mark", "aria-hidden": "true" }, "B"), "Bez"),
       h("nav", { class: "nav", "aria-label": "Разделы" },
         h("button", { type: "button", class: "nav-item active", onclick: () => renderHome(user) },
-          isAdmin ? "Проекты" : "Мои проекты")),
+          icon("grid"), isAdmin ? "Проекты" : "Мои проекты")),
       h("div", { class: "sidebar-user" },
         avatar(displayName),
         h("div", { class: "sidebar-user-text" },
@@ -226,6 +400,7 @@
   async function adminView(body, user) {
     const grid = h("div", { class: "project-grid" }, h("p", { class: "muted" }, "Загрузка…"));
     const summary = h("div", { class: "stats" });
+    const charts = h("div", { class: "chart-grid" });
     const msg = h("p", { class: "error" });
     const name = h("input", { type: "text", placeholder: "Название проекта, напр. Кайнар", maxlength: "80", "aria-label": "Название проекта", required: "" });
     const contract = h("input", { type: "number", min: "0", step: "0.01", placeholder: "Сумма контракта, сом", "aria-label": "Сумма контракта, сом" });
@@ -270,10 +445,11 @@
       ] = await Promise.all([
         sb.from("projects").select("id, name, created_at").order("created_at", { ascending: false }),
         sb.from("project_contracts").select("project_id, amount"),
-        fetchAll("expenses", "id, project_id, amount, status")
+        fetchAll("expenses", "id, project_id, amount, status, created_at")
       ]);
       grid.replaceChildren();
       summary.replaceChildren();
+      charts.replaceChildren();
       if (error) { grid.append(h("p", { class: "error" }, "Не удалось загрузить проекты")); return; }
       if (!projects.length) { grid.append(h("p", { class: "muted" }, "Проектов пока нет. Создайте первый.")); return; }
 
@@ -291,10 +467,42 @@
       const contractTotal = (contracts || []).reduce((total, item) => total + Number(item.amount || 0), 0);
       const spentOnContracts = (contracts || []).reduce((total, item) => total + (spentBy[item.project_id] || 0), 0);
       summary.append(
-        stat("Проектов", String(projects.length)),
-        stat("Сумма контрактов", contractsError ? "—" : som(contractTotal)),
         stat("Остаток по контрактам", contractsError ? "—" : som(contractTotal - spentOnContracts),
-          contractsError ? "" : meter(spentOnContracts, contractTotal), "accent"));
+          contractsError ? "" : meter(spentOnContracts, contractTotal), "accent", "wallet"),
+        stat("Сумма контрактов", contractsError ? "—" : som(contractTotal), "", "", "doc"),
+        stat("Проектов", String(projects.length), "", "", "grid"));
+
+      // ----- Charts: spending by month, and how all contracts are used -----
+      const counted = (expensesError ? [] : expenses).filter(expense => expense.status !== "rejected");
+      const months = [];
+      const now = new Date();
+      for (let back = 5; back >= 0; back -= 1) {
+        const start = new Date(now.getFullYear(), now.getMonth() - back, 1);
+        months.push({
+          key: start.getFullYear() + "-" + start.getMonth(),
+          label: start.toLocaleDateString("ru-RU", { month: "short" }).replace(".", ""),
+          note: start.toLocaleDateString("ru-RU", { month: "long", year: "numeric" }),
+          value: 0
+        });
+      }
+      counted.forEach(expense => {
+        const at = new Date(expense.created_at);
+        const month = months.find(item => item.key === at.getFullYear() + "-" + at.getMonth());
+        if (month) month.value += Number(expense.amount || 0);
+      });
+      charts.append(panel("Расходы по месяцам", columns(months, "Расходы сотрудников за последние шесть месяцев")));
+      if (!contractsError && contractTotal > 0) {
+        const contracted = new Set((contracts || []).map(item => item.project_id));
+        const onContracts = counted.filter(expense => contracted.has(expense.project_id));
+        const pendingSum = onContracts.filter(expense => expense.status === "pending")
+          .reduce((total, expense) => total + Number(expense.amount || 0), 0);
+        const approvedSum = onContracts.reduce((total, expense) => total + Number(expense.amount || 0), 0) - pendingSum;
+        charts.append(panel("Бюджет всех контрактов", donut([
+          { label: "Одобренные расходы", value: approvedSum, color: "var(--s1)" },
+          { label: "Ждут решения", value: pendingSum, color: "var(--s2)" },
+          { label: "Остаток", value: Math.max(0, contractTotal - spentOnContracts), color: "var(--rest)" }
+        ], percent(spentOnContracts, contractTotal), "израсходовано", "Как израсходованы все контракты")));
+      }
       if (missingTable) {
         grid.append(h("p", { class: "notice" }, "Контракты пока недоступны: выполните project-contract.sql в Supabase SQL Editor."));
       } else if (contractsError) {
@@ -336,6 +544,7 @@
     body.append(
       h("div", { class: "page-head" }, h("h1", {}, "Проекты")),
       summary,
+      charts,
       panel("Новый проект", form, msg),
       grid);
     await load();
@@ -520,6 +729,8 @@
         contractLeft < 0 ? "accent negative" : "accent");
     }
 
+    contractStat.querySelector(".stat-label").prepend(h("span", { class: "stat-icon" }, icon("wallet")));
+
     // ----- Spending by worker -----
     const spentByWorker = {};
     expenses.filter(expense => expense.status !== "rejected").forEach(expense => {
@@ -529,9 +740,39 @@
     });
     const shareBase = contractAmount > 0 ? contractAmount : deductedTotal;
     const shareLabel = contractAmount > 0 ? "% контракта" : "% расходов";
-    const breakdown = Object.entries(spentByWorker).sort((a, b) => b[1].total - a[1].total).map(([id, entry]) =>
+    // Colour follows the worker (fixed order by id), never the ranking; past six, the rest share "Другие".
+    const colorOf = {};
+    Object.keys(spentByWorker).sort().forEach((id, i) => { colorOf[id] = i < SERIES.length - 1 ? SERIES[i] : "var(--rest)"; });
+    const ranked = Object.entries(spentByWorker).sort((a, b) => b[1].total - a[1].total);
+    const workerParts = ranked.filter(([id]) => colorOf[id] !== "var(--rest)")
+      .map(([id, entry]) => ({ label: nameOf(id), value: entry.total, color: colorOf[id] }));
+    const othersTotal = ranked.filter(([id]) => colorOf[id] === "var(--rest)").reduce((sum, item) => sum + item[1].total, 0);
+    if (othersTotal) workerParts.push({ label: "Другие", value: othersTotal, color: "var(--rest)" });
+
+    // ----- Line: what is left of the contract after each expense (or total spent, with no contract) -----
+    const timeline = expenses.filter(expense => expense.status !== "rejected")
+      .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+    const hasContract = contractAmount !== null;
+    let running = hasContract ? contractAmount : 0;
+    const linePoints = timeline.length ? [{
+      t: new Date(timeline[0].created_at).getTime() - 12 * 3600 * 1000,
+      v: running,
+      note: hasContract ? "Контракт до расходов" : "До расходов"
+    }] : [];
+    timeline.forEach(expense => {
+      running += (hasContract ? -1 : 1) * Number(expense.amount || 0);
+      linePoints.push({
+        t: new Date(expense.created_at).getTime(),
+        v: running,
+        note: nameOf(expense.worker_id) + ": " + expense.reason + ", −" + money(Number(expense.amount))
+      });
+    });
+    const lineTitle = hasContract ? "Остаток контракта по дням" : "Расходы нарастающим итогом";
+
+    const breakdown = ranked.map(([id, entry]) =>
       h("div", { class: "breakdown-row" },
         h("div", { class: "person-row" },
+          h("span", { class: "swatch", style: "background:" + colorOf[id] }),
           avatar(nameOf(id)),
           h("div", { class: "person-text" },
             h("strong", {}, nameOf(id)),
@@ -586,17 +827,31 @@
       h("div", { class: "stats" },
         contractStat,
         stat("Расходы сотрудников", money(deductedTotal),
-          pendingTotal ? h("span", { class: "stat-note" }, "из них ждут решения: " + money(pendingTotal)) : ""),
-        stat("Выдано сотрудникам", money(addedTotal)),
-        stat("На руках у сотрудников", money(addedTotal - deductedTotal))),
+          pendingTotal ? h("span", { class: "stat-note" }, "из них ждут решения: " + money(pendingTotal)) : "", "", "out"),
+        stat("Выдано сотрудникам", money(addedTotal), "", "", "in"),
+        stat("На руках у сотрудников", money(addedTotal - deductedTotal), "", "", "users")),
       h("p", { class: "hint" }, "Остаток контракта видит только администратор. Расходы в ожидании уже вычтены; отклонённые возвращаются в остаток."),
+      h("div", { class: "chart-grid" },
+        panel(lineTitle, linePoints.length
+          ? lineChart(linePoints, lineTitle)
+          : h("p", { class: "muted empty" }, "График появится после первого расхода.")),
+        hasContract && contractAmount > 0
+          ? panel("Бюджет контракта", donut([
+            { label: "Одобренные расходы", value: deductedTotal - pendingTotal, color: "var(--s1)" },
+            { label: "Ждут решения", value: pendingTotal, color: "var(--s2)" },
+            { label: "Остаток", value: Math.max(0, contractLeft), color: "var(--rest)" }
+          ], percent(deductedTotal, contractAmount), "израсходовано", "Как израсходован контракт"))
+          : ""),
       panel("Контракт проекта", contractForm, contractMsg),
       panel("Ожидают решения",
         ...(pendingExpenses.length
           ? pendingExpenses.map(pendingCard)
           : [h("p", { class: "muted empty" }, "Нет расходов, ожидающих решения.")])),
-      panel("Расходы по сотрудникам",
-        ...(breakdown.length ? breakdown : [h("p", { class: "muted empty" }, "Расходов пока нет.")])),
+      panel("Расходы по сотрудникам", breakdown.length
+        ? h("div", { class: "split" },
+          donut(workerParts, compact(deductedTotal), "сом всего", "Доли расходов по сотрудникам"),
+          h("div", { class: "breakdown" }, ...breakdown))
+        : h("p", { class: "muted empty" }, "Расходов пока нет.")),
       panel("История пополнений", table(["Дата", "Сотрудник", "Описание", "Подтверждение", "Сумма"], transfers.map(transfer =>
         h("tr", {},
           h("td", {}, date(transfer.created_at)),
@@ -874,9 +1129,27 @@
             h("td", {}, proofButton(transfer.proof_path))))
           : [h("tr", {}, h("td", { colspan: "4", class: "muted" }, "Пополнений пока нет."))])));
 
+    // Line: my balance after every top-up and expense (rejected expenses do not count)
+    const moves = [
+      ...transfers.map(transfer => ({ at: transfer.created_at, change: Number(transfer.amount || 0), note: "Пополнение: " + (transfer.note || "") })),
+      ...expenses.filter(expense => expense.status !== "rejected")
+        .map(expense => ({ at: expense.created_at, change: -Number(expense.amount || 0), note: "Расход: " + expense.reason }))
+    ].sort((a, b) => new Date(a.at) - new Date(b.at));
+    let runningBalance = 0;
+    const balancePoints = moves.length
+      ? [{ t: new Date(moves[0].at).getTime() - 12 * 3600 * 1000, v: 0, note: "До первой операции" }]
+      : [];
+    moves.forEach(move => {
+      runningBalance += move.change;
+      balancePoints.push({ t: new Date(move.at).getTime(), v: runningBalance, note: move.note });
+    });
+
     body.append(
       h("div", { class: "stats" },
-        stat("Мой баланс", money(balance), "", "accent")),
+        stat("Мой баланс", money(balance), "", "accent", "wallet")),
+      panel("Мой баланс по дням", balancePoints.length
+        ? lineChart(balancePoints, "Мой баланс по дням")
+        : h("p", { class: "muted empty" }, "График появится после первой операции.")),
       panel("Отправить расход с подтверждением", expenseForm),
       panel("История расходов", expensesTable),
       panel("История пополнений", transfersTable));

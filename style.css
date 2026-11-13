@@ -4,6 +4,8 @@
   --accent: #6c5ce7; --accent-ink: #ffffff; --accent-soft: #efedfd;
   --in: #12a26b; --in-soft: #e6f6ef; --out: #e0475b; --out-soft: #fdecee;
   --wait: #b7791f; --wait-soft: #fdf4e3;
+  --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100; --s5: #e87ba4; --s6: #008300;
+  --rest: #dde0e8; --track: #eceef3; --grid: #eceef3;
   --radius: 14px; --radius-sm: 10px;
   --shadow: 0 1px 2px rgba(20, 22, 40, 0.04), 0 4px 16px rgba(20, 22, 40, 0.04);
   color-scheme: light dark;
@@ -15,6 +17,8 @@
     --accent: #9d91ff; --accent-ink: #12111c; --accent-soft: #272442;
     --in: #4fd39b; --in-soft: #16302a; --out: #ff7d8c; --out-soft: #3a1c22;
     --wait: #f0b85a; --wait-soft: #352a17;
+    --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181; --s6: #008300;
+    --rest: #3a3e4d; --track: #262936; --grid: #262936;
     --shadow: none;
   }
 }
@@ -24,6 +28,8 @@
   --accent: #9d91ff; --accent-ink: #12111c; --accent-soft: #272442;
   --in: #4fd39b; --in-soft: #16302a; --out: #ff7d8c; --out-soft: #3a1c22;
   --wait: #f0b85a; --wait-soft: #352a17;
+  --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181; --s6: #008300;
+  --rest: #3a3e4d; --track: #262936; --grid: #262936;
   --shadow: none;
 }
 
@@ -138,7 +144,7 @@ input:focus-visible, button:focus-visible { outline: 2px solid var(--accent); ou
   padding: 18px 20px; background: var(--surface);
   border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow);
 }
-.stat-label { color: var(--ink-2); font-size: 0.8125rem; font-weight: 500; }
+.stat-label { color: var(--ink-2); font-size: 0.8125rem; font-weight: 600; }
 .stat-value {
   font-size: 1.5rem; font-weight: 700; letter-spacing: -0.02em; line-height: 1.2;
   font-variant-numeric: tabular-nums; overflow-wrap: anywhere;
@@ -249,4 +255,80 @@ td.num { white-space: nowrap; font-weight: 600; }
   .stats { grid-template-columns: 1fr; }
   .stat, .panel, .project-card { padding: 16px; }
   .person-row { flex-wrap: wrap; }
+}
+
+/* ---------- Icons ---------- */
+.icon { flex: none; display: block; }
+.nav-item { display: flex; align-items: center; gap: 10px; }
+.stat-label { display: flex; align-items: center; gap: 10px; }
+.stat-icon {
+  display: grid; place-items: center; width: 34px; height: 34px; border-radius: 10px;
+  background: var(--accent-soft); color: var(--accent);
+}
+
+/* ---------- Charts ---------- */
+.chart-grid { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(0, 1fr); gap: 16px; }
+.chart-grid > .panel:only-child { grid-column: 1 / -1; }
+.chart-grid:empty { display: none; }
+.split { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 24px; align-items: center; }
+.split .legend { display: none; }
+.breakdown { display: grid; gap: 12px; min-width: 0; }
+.swatch { flex: none; display: inline-block; width: 10px; height: 10px; border-radius: 3px; }
+
+.donut-chart { display: grid; gap: 16px; justify-items: center; }
+.donut-wrap { position: relative; width: 168px; height: 168px; }
+.donut { display: block; width: 100%; height: 100%; }
+.donut-seg { cursor: pointer; outline: none; transition: stroke-width 0.12s; }
+.donut-seg:hover, .donut-seg:focus-visible { stroke-width: 24; }
+.donut-center {
+  position: absolute; inset: 0; display: grid; place-content: center; text-align: center;
+  pointer-events: none;
+}
+.donut-center strong { font-size: 1.375rem; font-weight: 700; letter-spacing: -0.02em; line-height: 1.2; }
+.donut-center .muted { font-size: 0.75rem; }
+.legend { list-style: none; margin: 0; padding: 0; width: 100%; display: grid; gap: 8px; font-size: 0.875rem; }
+.legend li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; gap: 8px; align-items: center; }
+.legend strong { font-variant-numeric: tabular-nums; font-weight: 600; white-space: nowrap; }
+.legend .muted { min-width: 3.2em; text-align: right; font-variant-numeric: tabular-nums; }
+
+.line-chart { min-width: 0; }
+.line-chart svg { display: block; width: 100%; height: auto; outline: none; touch-action: pan-y; }
+.line-chart svg:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
+.line-chart .line { fill: none; stroke: var(--accent); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.line-chart .area { fill: var(--accent); opacity: 0.1; }
+.line-chart .grid-line { stroke: var(--grid); stroke-width: 1; }
+.line-chart .cross { stroke: var(--ink-2); stroke-width: 1; }
+.line-chart .end-dot { fill: var(--accent); stroke: var(--surface); stroke-width: 2; }
+.axis-text { fill: var(--ink-2); font-size: 11px; font-variant-numeric: tabular-nums; }
+
+.columns { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 8px; height: 220px; }
+.column {
+  display: grid; grid-template-rows: auto minmax(0, 1fr) auto; gap: 6px; justify-items: center;
+  min-width: 0; border-radius: 8px; outline: none;
+}
+.column:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.column-value { min-height: 1.2em; font-size: 0.75rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+.column-track {
+  display: flex; align-items: flex-end; justify-content: center; width: 100%; height: 100%;
+  border-bottom: 1px solid var(--grid);
+}
+.column-bar { display: block; width: min(24px, 60%); min-height: 0; border-radius: 4px 4px 0 0; background: var(--s1); }
+.column:hover .column-bar, .column:focus-visible .column-bar { filter: brightness(1.12); }
+.column-label { font-size: 0.75rem; color: var(--ink-2); }
+
+.chart-tip {
+  position: fixed; z-index: 50; display: grid; gap: 2px; max-width: 260px; padding: 8px 12px;
+  background: var(--ink); color: var(--bg); border-radius: 10px; font-size: 0.8125rem;
+  pointer-events: none; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+}
+.chart-tip[hidden] { display: none; }
+.chart-tip strong { font-size: 0.9375rem; font-variant-numeric: tabular-nums; }
+.chart-tip span { opacity: 0.8; }
+
+@media (max-width: 860px) {
+  .chart-grid { grid-template-columns: 1fr; }
+}
+@media (max-width: 560px) {
+  .split { grid-template-columns: 1fr; justify-items: center; }
+  .split .breakdown { width: 100%; }
 }
