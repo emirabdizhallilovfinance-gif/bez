@@ -519,6 +519,45 @@
           h("td", { class: "num" + (expense.status === "rejected" ? " muted" : " amount-out") },
             (expense.status === "rejected" ? "" : "−") + money(Number(expense.amount))))), "Списаний пока нет.")));
 
+    // ----- Add a worker to this project -----
+    const addPanel = panel("Добавить сотрудника в проект");
+    list.append(addPanel);
+    const { data: allWorkers, error: workersError } = await sb.from("profiles")
+      .select("id, full_name, role").eq("role", "worker").order("full_name");
+    if (workersError) {
+      addPanel.append(h("p", { class: "error" }, "Не удалось загрузить список сотрудников: " + workersError.message));
+    } else {
+      const available = (allWorkers || []).filter(worker => !currentMembers.includes(worker.id));
+      if (!available.length) {
+        addPanel.append(h("p", { class: "muted empty" }, (allWorkers || []).length
+          ? "Все сотрудники уже в этом проекте."
+          : "Сотрудников пока нет. Создайте пользователя с ролью worker в Supabase."));
+      } else {
+        const picker = h("select", { "aria-label": "Сотрудник", required: "" },
+          h("option", { value: "" }, "Выберите сотрудника"),
+          ...available.map(worker => h("option", { value: worker.id }, worker.full_name || "Без имени")));
+        const addError = h("p", { class: "error" });
+        const addButton = h("button", { type: "submit" }, "Добавить сотрудника");
+        addPanel.append(h("form", {
+          class: "row",
+          onsubmit: async ev => {
+            ev.preventDefault();
+            if (!picker.value) { addError.textContent = "Выберите сотрудника"; return; }
+            addError.textContent = "";
+            addButton.disabled = true;
+            const { error: addMemberError } = await sb.from("project_members")
+              .insert({ project_id: project.id, user_id: picker.value });
+            if (addMemberError) {
+              addError.textContent = "Не удалось добавить сотрудника: " + addMemberError.message;
+              addButton.disabled = false;
+              return;
+            }
+            await projectView(body, project, back, user);
+          }
+        }, picker, addButton), addError);
+      }
+    }
+
     const workersPanel = panel("Баланс сотрудников");
     list.append(workersPanel);
     if (!currentMembers.length) {
