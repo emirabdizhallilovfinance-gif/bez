@@ -31,6 +31,7 @@ Run in this order in the Supabase SQL Editor: `add-proof-columns.sql`, `proof-st
 
 ## Status
 - ✅ Contracts, redesign, receipt photos and no-approval expenses are done.
-- ⏭️ Next: host it on Vercel.
+- ✅ Live at https://bez-navy.vercel.app (Vercel project `bez`, team abdizhalilcorp). Every merge into `main` redeploys it automatically.
+- ⏭️ Next: try the phone layout on a real phone with real logins.
 
 **Open question:** should a top-up reduce what's left of the contract? Right now it doesn't.
