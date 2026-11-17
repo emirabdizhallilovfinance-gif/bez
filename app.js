@@ -75,6 +75,11 @@
     rejected: "Отклонено (не списано)"
   })[status] || status;
   const statusTag = status => h("span", { class: "tag tag-" + status }, statusText(status));
+  const requestTag = status => h("span", { class: "tag tag-" + status }, ({
+    pending: "Ждёт решения",
+    approved: "Выдано",
+    rejected: "Отклонено"
+  })[status] || status);
   const som = value => Number(value || 0).toLocaleString("ru-RU", { maximumFractionDigits: 2 }) + " сом";
   const initials = name => (name || "?").trim().split(/\s+/).slice(0, 2).map(part => part[0]).join("").toUpperCase() || "?";
   const avatar = name => h("span", { class: "avatar", "aria-hidden": "true" }, initials(name));
@@ -510,13 +515,18 @@
     return data;
   }
   async function fetchAdminData() {
-    const [projectsResult, contractsResult, expensesResult, peopleResult, transfersResult] = await Promise.all([
+    const [projectsResult, contractsResult, expensesResult, peopleResult, transfersResult, requestsResult] = await Promise.all([
       sb.from("projects").select("id, name, created_at").order("created_at", { ascending: false }),
       sb.from("project_contracts").select("project_id, amount"),
       fetchAll("expenses", "id, project_id, worker_id, amount, reason, status, proof_path, created_at"),
       sb.from("profiles").select("id, full_name, role"),
-      fetchAll("transfers", "id, project_id, amount")
+      fetchAll("transfers", "id, project_id, amount"),
+      fetchAll("money_requests", "id, project_id, status")
     ]);
+    // Money requests are optional until money-requests.sql has been run, so an error here is not fatal.
+    const waitingRequestsBy = {};
+    (requestsResult.error ? [] : (requestsResult.data || [])).filter(request => request.status === "pending")
+      .forEach(request => { waitingRequestsBy[request.project_id] = (waitingRequestsBy[request.project_id] || 0) + 1; });
     const projects = projectsResult.data || [];
     const contracts = contractsResult.error ? [] : (contractsResult.data || []);
     const expenses = expensesResult.error ? [] : (expensesResult.data || []);
@@ -533,7 +543,7 @@
     const contractTotal = contracts.reduce((total, item) => total + Number(item.amount || 0), 0);
     const spentOnContracts = contracts.reduce((total, item) => total + (issuedBy[item.project_id] || 0), 0);
     return {
-      projects, contracts, expenses, people, counted, pending, spentBy, issuedBy, pendingBy, contractTotal, spentOnContracts,
+      projects, contracts, expenses, people, counted, pending, spentBy, issuedBy, pendingBy, waitingRequestsBy, contractTotal, spentOnContracts,
       projectsError: projectsResult.error, contractsError: contractsResult.error, expensesError: expensesResult.error || transfersResult.error,
       nameOf: id => (people.find(person => person.id === id) || {}).full_name || "Без имени",
       projectName: id => (projects.find(project => project.id === id) || {}).name || "Проект",
@@ -664,6 +674,9 @@
         const badges = [];
         const budgetBadge = item ? budgetTag(total, spent) : null;
         if (budgetBadge) badges.push(budgetBadge);
+        if (data.waitingRequestsBy[p.id]) {
+          badges.push(h("span", { class: "tag tag-pending" }, "Запросов денег: " + data.waitingRequestsBy[p.id]));
+        }
         grid.append(h("button", {
           type: "button",
           class: "project-card",
@@ -768,15 +781,19 @@
       { data: expenses, error: expensesError },
       { data: balances, error: balancesError },
       { data: contract, error: contractError },
-      { data: profiles, error: profilesError }
+      { data: profiles, error: profilesError },
+      { data: requestRows, error: requestsError }
     ] = await Promise.all([
       sb.from("project_members").select("user_id").eq("project_id", project.id),
       loadAllRows("transfers", "worker_id, amount, note, proof_path, created_at"),
       loadAllRows("expenses", "id, worker_id, amount, reason, proof_path, status, admin_comment, created_at"),
       sb.from("balances").select("worker_id, balance").eq("project_id", project.id),
       sb.from("project_contracts").select("amount").eq("project_id", project.id).maybeSingle(),
-      sb.from("profiles").select("id, full_name, role")
+      sb.from("profiles").select("id, full_name, role"),
+      sb.from("money_requests").select("id, worker_id, amount, reason, status, admin_comment, created_at")
+        .eq("project_id", project.id).order("created_at", { ascending: false })
     ]);
+    const requests = requestsError ? [] : (requestRows || []);
     if (membersError || transfersError || expensesError || balancesError) {
       const failed = [
         ["project_members", membersError],
@@ -987,6 +1004,49 @@
     const budgetWarning = contractAmount === null ? null : budgetTag(contractAmount, addedTotal);
     if (budgetWarning) contractStat.append(budgetWarning);
 
+    // ----- Money requests from workers -----
+    const decide = async (request, approve, buttons) => {
+      let comment = null;
+      if (approve) {
+        if (!window.confirm("Выдать " + money(Number(request.amount)) + " сотруднику " + nameOf(request.worker_id)
+          + "?\n\nСумма вычтется из остатка контракта.")) return;
+      } else {
+        comment = window.prompt("Отклонить запрос. Комментарий для сотрудника (можно оставить пустым):", "");
+        if (comment === null) return;
+      }
+      buttons.forEach(button => { button.disabled = true; });
+      const { error: decideError } = await sb.rpc("decide_money_request", {
+        p_request_id: request.id, p_approve: approve, p_comment: comment
+      });
+      if (decideError) {
+        window.alert("Не удалось сохранить решение: " + decideError.message);
+        buttons.forEach(button => { button.disabled = false; });
+        return;
+      }
+      dataChanged();
+      await projectView(body, project, back, user);
+    };
+    const pendingRequests = requests.filter(request => request.status === "pending");
+    const requestsPanel = panel("Запросы сотрудников на деньги", requestsError
+      ? h("p", { class: "muted empty" }, "Запросы денег пока недоступны: выполните money-requests.sql в Supabase SQL Editor.")
+      : table(["Дата", "Сотрудник", "Зачем", "Сумма", "Решение"], requests.map(request => {
+        const give = h("button", { type: "button" }, "Выдать");
+        const decline = h("button", { type: "button", class: "alt" }, "Отклонить");
+        give.onclick = () => decide(request, true, [give, decline]);
+        decline.onclick = () => decide(request, false, [give, decline]);
+        return h("tr", {},
+          h("td", {}, date(request.created_at)),
+          h("td", {}, nameOf(request.worker_id)),
+          h("td", {}, request.reason),
+          h("td", { class: "num" }, money(Number(request.amount))),
+          h("td", {}, request.status === "pending"
+            ? h("div", { class: "row" }, give, decline)
+            : [requestTag(request.status), request.admin_comment ? h("div", { class: "muted" }, request.admin_comment) : ""]));
+      }), "Запросов пока нет."));
+    if (pendingRequests.length) {
+      requestsPanel.prepend(h("p", { class: "notice" }, "Ждут решения: " + pendingRequests.length));
+    }
+
     list.replaceChildren(
       h("div", { class: "stats" },
         contractStat,
@@ -995,6 +1055,7 @@
         stat("Выдано сотрудникам", money(addedTotal), "", "", "in"),
         stat("На руках у сотрудников", money(addedTotal - deductedTotal), "", "", "users")),
       h("p", { class: "hint" }, "Остаток контракта видит только администратор. Каждое пополнение вычитается из остатка контракта, а расходы сотрудников — из денег у них на руках."),
+      requestsPanel,
       h("div", { class: "chart-grid" },
         panel(lineTitle, linePoints.length
           ? lineChart(linePoints, lineTitle)
@@ -1205,7 +1266,8 @@
       { data: membership, error: membershipError },
       { data: balances, error: balanceError },
       { data: expenses, error: expensesError },
-      { data: transfers, error: transfersError }
+      { data: transfers, error: transfersError },
+      { data: requestRows, error: requestsError }
     ] = await Promise.all([
       sb.from("project_members").select("user_id")
         .eq("project_id", project.project_id).eq("user_id", user.id).maybeSingle(),
@@ -1216,8 +1278,12 @@
         .order("created_at", { ascending: false }),
       sb.from("transfers").select("amount, note, proof_path, created_at")
         .eq("project_id", project.project_id).eq("worker_id", user.id)
+        .order("created_at", { ascending: false }),
+      sb.from("money_requests").select("id, amount, reason, status, admin_comment, created_at")
+        .eq("project_id", project.project_id).eq("worker_id", user.id)
         .order("created_at", { ascending: false })
     ]);
+    const myRequests = requestsError ? [] : (requestRows || []);
 
     if (membershipError || !membership) {
       finish(h("p", { class: "error" }, "Не удалось проверить доступ к проекту"));
@@ -1275,6 +1341,56 @@
         }
       }
     }, expenseAmount, expenseReason, expenseProof, expenseSubmit, expenseError);
+    // ----- Ask the boss for money -----
+    const askAmount = h("input", {
+      type: "number", min: "0.01", step: "0.01",
+      placeholder: "Сколько нужно, сом", "aria-label": "Сумма запроса, сом", required: ""
+    });
+    const askReason = h("input", {
+      type: "text", maxlength: "300",
+      placeholder: "Зачем нужны деньги", "aria-label": "Зачем нужны деньги", required: ""
+    });
+    const askError = h("p", { class: "error" });
+    const askSubmit = h("button", { type: "submit" }, "Запросить деньги");
+    const askForm = h("form", {
+      class: "transaction-form",
+      onsubmit: async ev => {
+        ev.preventDefault();
+        const amount = Number(askAmount.value);
+        const reason = askReason.value.trim();
+        if (!Number.isFinite(amount) || amount <= 0 || !reason) {
+          askError.textContent = "Введите сумму больше нуля и зачем нужны деньги";
+          return;
+        }
+        askError.textContent = "";
+        askSubmit.disabled = true;
+        try {
+          await insertRow("money_requests", {
+            project_id: project.project_id, worker_id: user.id, amount, reason
+          });
+          await workerProjectView(body, project, user, back);
+        } catch (dbError) {
+          askError.textContent = /money_requests/.test(dbError.message || "")
+            ? "Запросы денег пока недоступны. Скажите администратору."
+            : "Не удалось отправить запрос: " + (dbError.message || "ошибка базы данных");
+          askSubmit.disabled = false;
+        }
+      }
+    }, askAmount, askReason, askSubmit, askError);
+    const requestsTable = h("div", { class: "table-wrap" },
+      h("table", {},
+        h("thead", {}, h("tr", {},
+          h("th", {}, "Дата"),
+          h("th", {}, "Зачем"),
+          h("th", {}, "Сумма"),
+          h("th", {}, "Решение"))),
+        h("tbody", {}, myRequests.length
+          ? myRequests.map(request => h("tr", {},
+            h("td", {}, new Date(request.created_at).toLocaleString("ru-RU")),
+            h("td", {}, request.reason),
+            h("td", {}, money(request.amount)),
+            h("td", {}, requestTag(request.status), request.admin_comment ? h("div", { class: "muted" }, "Комментарий: " + request.admin_comment) : "")))
+          : [h("tr", {}, h("td", { colspan: "4", class: "muted" }, "Запросов пока нет."))])));
     const expensesTable = h("div", { class: "table-wrap" },
       h("table", {},
         h("thead", {}, h("tr", {},
@@ -1327,6 +1443,8 @@
       panel("Мой баланс по дням", balancePoints.length
         ? lineChart(balancePoints, "Мой баланс по дням")
         : h("p", { class: "muted empty" }, "График появится после первой операции.")),
+      panel("Запросить деньги у администратора", askForm),
+      panel("Мои запросы денег", requestsTable),
       panel("Отправить расход с подтверждением", expenseForm),
       panel("История расходов", expensesTable),
       panel("История пополнений", transfersTable));
