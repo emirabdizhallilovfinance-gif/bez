@@ -15,7 +15,17 @@
       else e.setAttribute(k, v);
     });
     kids.flat().forEach(k => e.append(k));
+    if (tag === "table") labelCells(e);
     return e;
+  }
+  // Each cell remembers its column name, so on a phone a table row can be shown as a card.
+  function labelCells(table) {
+    const names = [...table.querySelectorAll("thead th")].map(th => th.textContent);
+    table.querySelectorAll("tbody tr").forEach(row => {
+      [...row.children].forEach((cell, index) => {
+        if (!cell.hasAttribute("colspan") && names[index]) cell.setAttribute("data-label", names[index]);
+      });
+    });
   }
   function show(...nodes) { root.replaceChildren(...nodes); }
   function proofButton(path) {
@@ -309,6 +319,7 @@
   async function insertRow(table, values) {
     const { error } = await sb.from(table).insert(values);
     if (error) throw error;
+    dataChanged();
   }
 
   function proofFileInput(label) {
@@ -349,7 +360,7 @@
   async function insertWithProof(table, values, file, workerId, projectId) {
     const path = await uploadProof(file, workerId, projectId);
     const { error } = await sb.from(table).insert({ ...values, proof_path: path });
-    if (!error) return;
+    if (!error) { dataChanged(); return; }
 
     const { error: cleanupError } = await sb.storage.from("proofs").remove([path]);
     if (cleanupError) {
@@ -413,6 +424,7 @@
     }
     const isAdmin = profile.role === "admin";
     const displayName = profile.full_name || user.email;
+    dataChanged();
     logout.className = "alt logout";
 
     const sections = isAdmin ? [
@@ -436,7 +448,9 @@
         markActive(section.key);
         title.textContent = section.label;
         hideTip();
+        body.dataset.view = section.key;
         body.replaceChildren(h("p", { class: "muted" }, "Загрузка…"));
+        window.scrollTo(0, 0);
         return section.render(body, user, nav);
       },
       openProject(project) {
@@ -456,7 +470,7 @@
     };
     projectLinks.hidden = true;
 
-    const sidebar = h("aside", { class: "sidebar" },
+    const sidebar = h("aside", { class: "sidebar" + (sections.length === 1 ? " single" : "") },
       h("div", { class: "brand" }, h("span", { class: "brand-mark", "aria-hidden": "true" }, "B"), "Bez"),
       h("nav", { class: "nav", "aria-label": "Разделы" },
         h("span", { class: "nav-heading" }, "Меню"),
@@ -479,8 +493,23 @@
     await nav.go(sections[0].key);
   }
 
-  // ---------- Admin: shared data for overview, projects and review pages ----------
+  // ---------- Admin: shared data for overview, projects and workers pages ----------
+  // Kept for a short time so switching between pages is instant. Any change made in
+  // this app (dataChanged) throws it away, so the next page shows fresh numbers.
+  const ADMIN_CACHE_MS = 30000;
+  let adminCache = null;
+  function dataChanged() { adminCache = null; }
   async function loadAdminData(nav) {
+    if (!adminCache || Date.now() - adminCache.at > ADMIN_CACHE_MS) {
+      adminCache = { at: Date.now(), promise: fetchAdminData() };
+    }
+    const cached = adminCache;
+    const data = await cached.promise;
+    if ((data.projectsError || data.contractsError || data.expensesError) && adminCache === cached) adminCache = null;
+    nav.setProjects(data.projects);
+    return data;
+  }
+  async function fetchAdminData() {
     const [projectsResult, contractsResult, expensesResult, peopleResult] = await Promise.all([
       sb.from("projects").select("id, name, created_at").order("created_at", { ascending: false }),
       sb.from("project_contracts").select("project_id, amount"),
@@ -498,7 +527,6 @@
     pending.forEach(expense => { pendingBy[expense.project_id] = (pendingBy[expense.project_id] || 0) + 1; });
     const contractTotal = contracts.reduce((total, item) => total + Number(item.amount || 0), 0);
     const spentOnContracts = contracts.reduce((total, item) => total + (spentBy[item.project_id] || 0), 0);
-    nav.setProjects(projects);
     return {
       projects, contracts, expenses, people, counted, pending, spentBy, pendingBy, contractTotal, spentOnContracts,
       projectsError: projectsResult.error, contractsError: contractsResult.error, expensesError: expensesResult.error,
@@ -602,6 +630,7 @@
         const { data: created, error } = await sb.from("projects")
           .insert({ name: n, created_by: user.id }).select("id").single();
         if (error) { msg.textContent = "Не удалось создать проект"; create.disabled = false; return; }
+        dataChanged();
         if (amount !== null) {
           const { error: contractError } = await sb.from("project_contracts")
             .upsert({ project_id: created.id, amount });
@@ -700,13 +729,23 @@
 
   // ---------- Admin: one project page ----------
   async function projectView(body, project, back, user) {
+    // After an action on this same page, keep the old page on screen (and the scroll
+    // position) until the fresh numbers arrive, instead of flashing "Загрузка…".
+    const viewKey = "project:" + project.id;
+    const refreshing = body.dataset.view === viewKey;
+    body.dataset.view = viewKey;
     const list = h("div", { class: "project-layout" }, h("p", { class: "muted" }, "Загрузка…"));
     const headRow = h("div", { class: "page-head-row" }, h("h1", {}, project.name));
-    body.replaceChildren(
-      h("div", { class: "page-head" },
-        h("button", { type: "button", class: "alt back", onclick: back }, "← Все проекты"),
-        headRow),
-      list);
+    const pageHead = h("div", { class: "page-head" },
+      h("button", { type: "button", class: "alt back", onclick: back }, "← Все проекты"),
+      headRow);
+    const reveal = () => {
+      if (body.dataset.view === viewKey && list.parentNode !== body) body.replaceChildren(pageHead, list);
+    };
+    if (!refreshing) {
+      body.replaceChildren(pageHead, list);
+      window.scrollTo(0, 0);
+    }
 
     async function loadAllRows(table, columns) {
       const rows = [];
@@ -726,13 +765,15 @@
       { data: transfers, error: transfersError },
       { data: expenses, error: expensesError },
       { data: balances, error: balancesError },
-      { data: contract, error: contractError }
+      { data: contract, error: contractError },
+      { data: profiles, error: profilesError }
     ] = await Promise.all([
       sb.from("project_members").select("user_id").eq("project_id", project.id),
       loadAllRows("transfers", "worker_id, amount, note, proof_path, created_at"),
       loadAllRows("expenses", "id, worker_id, amount, reason, proof_path, status, admin_comment, created_at"),
       sb.from("balances").select("worker_id, balance").eq("project_id", project.id),
-      sb.from("project_contracts").select("amount").eq("project_id", project.id).maybeSingle()
+      sb.from("project_contracts").select("amount").eq("project_id", project.id).maybeSingle(),
+      sb.from("profiles").select("id, full_name, role")
     ]);
     if (membersError || transfersError || expensesError || balancesError) {
       const failed = [
@@ -743,23 +784,15 @@
       ].filter(item => item[1]).map(item => item[0] + ": " + (item[1].message || item[1].code));
       list.replaceChildren(h("p", { class: "error" }, "Не удалось загрузить историю проекта и балансы"),
         h("p", { class: "muted" }, failed.join(" | ")));
+      reveal();
       return;
     }
-
-    const ids = [...new Set([
-      ...members.map(member => member.user_id),
-      ...transfers.map(transfer => transfer.worker_id),
-      ...expenses.map(expense => expense.worker_id)
-    ])];
-    let people = [];
-    if (ids.length) {
-      const { data, error } = await sb.from("profiles").select("id, full_name").in("id", ids);
-      if (error) {
-        list.replaceChildren(h("p", { class: "error" }, "Не удалось загрузить имена сотрудников"));
-        return;
-      }
-      people = data || [];
+    if (profilesError) {
+      list.replaceChildren(h("p", { class: "error" }, "Не удалось загрузить имена сотрудников"));
+      reveal();
+      return;
     }
+    const people = profiles || [];
 
     const nameOf = id => (people.find(person => person.id === id) || {}).full_name || "Без имени";
     const balanceOf = id => Number((balances || []).find(balance => balance.worker_id === id)?.balance || 0);
@@ -809,6 +842,7 @@
           contractSave.disabled = false;
           return;
         }
+        dataChanged();
         await projectView(body, project, back, user);
       }
     }, contractInput, contractSave);
@@ -938,6 +972,7 @@
           deleteButton.disabled = false;
           return;
         }
+        dataChanged();
         back();
       }
     }, "Удалить проект");
@@ -953,7 +988,7 @@
           "", "", "out"),
         stat("Выдано сотрудникам", money(addedTotal), "", "", "in"),
         stat("На руках у сотрудников", money(addedTotal - deductedTotal), "", "", "users")),
-      h("p", { class: "hint" }, "Остаток контракта видит только администратор. Расходы в ожидании уже вычтены; отклонённые возвращаются в остаток."),
+      h("p", { class: "hint" }, "Остаток контракта видит только администратор. Все расходы сотрудников сразу вычитаются из остатка."),
       h("div", { class: "chart-grid" },
         panel(lineTitle, linePoints.length
           ? lineChart(linePoints, lineTitle)
@@ -990,11 +1025,10 @@
     // ----- Add a worker to this project -----
     const addPanel = panel("Добавить сотрудника в проект");
     list.append(addPanel);
-    const { data: allWorkers, error: workersError } = await sb.from("profiles")
-      .select("id, full_name, role").eq("role", "worker").order("full_name");
-    if (workersError) {
-      addPanel.append(h("p", { class: "error" }, "Не удалось загрузить список сотрудников: " + workersError.message));
-    } else {
+    // Already loaded with the rest of the page, so no extra round trip here
+    const allWorkers = people.filter(person => person.role === "worker")
+      .sort((a, b) => (a.full_name || "").localeCompare(b.full_name || "", "ru"));
+    {
       const available = (allWorkers || []).filter(worker => !currentMembers.includes(worker.id));
       if (!available.length) {
         addPanel.append(h("p", { class: "muted empty" }, (allWorkers || []).length
@@ -1020,6 +1054,7 @@
               addButton.disabled = false;
               return;
             }
+            dataChanged();
             await projectView(body, project, back, user);
           }
         }, picker, addButton), addError);
@@ -1030,6 +1065,7 @@
     list.append(workersPanel);
     if (!currentMembers.length) {
       workersPanel.append(h("p", { class: "muted empty" }, "В проекте пока нет сотрудников."));
+      reveal();
       return;
     }
     workersPanel.append(...currentMembers.map(id => {
@@ -1139,27 +1175,34 @@
         h("h3", {}, "Списание"),
         deductionForm);
     }));
+    reveal();
   }
 
   // ---------- Worker: only my projects ----------
   async function workerProjectView(body, project, user, back) {
-    const { data: membership, error: membershipError } = await sb.from("project_members")
-      .select("user_id").eq("project_id", project.project_id).eq("user_id", user.id).maybeSingle();
-    body.replaceChildren(
-      h("div", { class: "page-head" },
-        h("button", { type: "button", class: "alt back", onclick: back }, "← Мои проекты"),
-        h("h1", {}, project.projects ? project.projects.name : "Проект"))
-    );
-    if (membershipError || !membership) {
-      body.append(h("p", { class: "error" }, "Не удалось проверить доступ к проекту"));
-      return;
+    // Same idea as the admin project page: after sending an expense, keep the page
+    // (and scroll position) until the new data is ready.
+    const viewKey = "worker-project:" + project.project_id;
+    const refreshing = body.dataset.view === viewKey;
+    body.dataset.view = viewKey;
+    const head = h("div", { class: "page-head" },
+      h("button", { type: "button", class: "alt back", onclick: back }, "← Мои проекты"),
+      h("h1", {}, project.projects ? project.projects.name : "Проект"));
+    const finish = (...nodes) => { if (body.dataset.view === viewKey) body.replaceChildren(head, ...nodes); };
+    if (!refreshing) {
+      body.replaceChildren(head, h("p", { class: "muted" }, "Загрузка…"));
+      window.scrollTo(0, 0);
     }
 
+    // All four requests at once instead of one after another
     const [
+      { data: membership, error: membershipError },
       { data: balances, error: balanceError },
       { data: expenses, error: expensesError },
       { data: transfers, error: transfersError }
     ] = await Promise.all([
+      sb.from("project_members").select("user_id")
+        .eq("project_id", project.project_id).eq("user_id", user.id).maybeSingle(),
       sb.from("balances").select("balance")
         .eq("project_id", project.project_id).eq("worker_id", user.id),
       sb.from("expenses").select("amount, reason, proof_path, status, admin_comment, created_at")
@@ -1170,8 +1213,12 @@
         .order("created_at", { ascending: false })
     ]);
 
+    if (membershipError || !membership) {
+      finish(h("p", { class: "error" }, "Не удалось проверить доступ к проекту"));
+      return;
+    }
     if (balanceError || expensesError || transfersError) {
-      body.append(h("p", { class: "error" }, "Не удалось загрузить баланс и историю операций"));
+      finish(h("p", { class: "error" }, "Не удалось загрузить баланс и историю операций"));
       return;
     }
 
@@ -1268,7 +1315,7 @@
       balancePoints.push({ t: new Date(move.at).getTime(), v: runningBalance, note: move.note });
     });
 
-    body.append(
+    finish(
       h("div", { class: "stats" },
         stat("Мой баланс", money(balance), "", "accent", "wallet")),
       panel("Мой баланс по дням", balancePoints.length
@@ -1280,8 +1327,16 @@
   }
 
   async function workerView(body, user) {
-    const { data, error } = await sb.from("project_members")
-      .select("project_id, projects(name)").eq("user_id", user.id);
+    if (body.dataset.view !== "projects") {
+      body.dataset.view = "projects";
+      body.replaceChildren(h("p", { class: "muted" }, "Загрузка…"));
+      window.scrollTo(0, 0);
+    }
+    const [{ data, error }, { data: balances, error: balancesError }] = await Promise.all([
+      sb.from("project_members").select("project_id, projects(name)").eq("user_id", user.id),
+      sb.from("balances").select("project_id, balance").eq("worker_id", user.id)
+    ]);
+    if (body.dataset.view !== "projects") return;
     const list = h("div", { class: "project-grid" });
 
     if (error) {
@@ -1289,8 +1344,6 @@
     } else if (!data.length) {
       list.append(h("p", { class: "muted" }, "Вас пока не добавили ни в один проект."));
     } else {
-      const { data: balances, error: balancesError } = await sb.from("balances")
-        .select("project_id, balance").eq("worker_id", user.id);
       if (balancesError) {
         list.append(h("p", { class: "error" }, "Не удалось загрузить балансы"));
       } else {
@@ -1312,8 +1365,14 @@
   }
 
   // ---------- Session handling ----------
+  // Only redraw when the signed-in person actually changes. Supabase also reports
+  // "signed in" again when a phone comes back to the browser (e.g. after taking a
+  // receipt photo with the camera); redrawing then would throw away the open page and form.
+  let shownUserId;
   sb.auth.onAuthStateChange((event, session) => {
-    if (event === "TOKEN_REFRESHED" || event === "USER_UPDATED") return;
+    const userId = session ? session.user.id : null;
+    if (userId === shownUserId) return;
+    shownUserId = userId;
     // setTimeout avoids calling Supabase inside its own auth callback
     setTimeout(() => { session ? renderHome(session.user) : renderLogin(); }, 0);
   });
