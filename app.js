@@ -510,11 +510,12 @@
     return data;
   }
   async function fetchAdminData() {
-    const [projectsResult, contractsResult, expensesResult, peopleResult] = await Promise.all([
+    const [projectsResult, contractsResult, expensesResult, peopleResult, transfersResult] = await Promise.all([
       sb.from("projects").select("id, name, created_at").order("created_at", { ascending: false }),
       sb.from("project_contracts").select("project_id, amount"),
       fetchAll("expenses", "id, project_id, worker_id, amount, reason, status, proof_path, created_at"),
-      sb.from("profiles").select("id, full_name, role")
+      sb.from("profiles").select("id, full_name, role"),
+      fetchAll("transfers", "id, project_id, amount")
     ]);
     const projects = projectsResult.data || [];
     const contracts = contractsResult.error ? [] : (contractsResult.data || []);
@@ -525,11 +526,15 @@
     const spentBy = {}, pendingBy = {};
     counted.forEach(expense => { spentBy[expense.project_id] = (spentBy[expense.project_id] || 0) + Number(expense.amount || 0); });
     pending.forEach(expense => { pendingBy[expense.project_id] = (pendingBy[expense.project_id] || 0) + 1; });
+    // A contract is used up by top-ups (money given to workers); what workers then spend comes out of their own balance.
+    const transfers = transfersResult.error ? [] : (transfersResult.data || []);
+    const issuedBy = {};
+    transfers.forEach(transfer => { issuedBy[transfer.project_id] = (issuedBy[transfer.project_id] || 0) + Number(transfer.amount || 0); });
     const contractTotal = contracts.reduce((total, item) => total + Number(item.amount || 0), 0);
-    const spentOnContracts = contracts.reduce((total, item) => total + (spentBy[item.project_id] || 0), 0);
+    const spentOnContracts = contracts.reduce((total, item) => total + (issuedBy[item.project_id] || 0), 0);
     return {
-      projects, contracts, expenses, people, counted, pending, spentBy, pendingBy, contractTotal, spentOnContracts,
-      projectsError: projectsResult.error, contractsError: contractsResult.error, expensesError: expensesResult.error,
+      projects, contracts, expenses, people, counted, pending, spentBy, issuedBy, pendingBy, contractTotal, spentOnContracts,
+      projectsError: projectsResult.error, contractsError: contractsResult.error, expensesError: expensesResult.error || transfersResult.error,
       nameOf: id => (people.find(person => person.id === id) || {}).full_name || "Без имени",
       projectName: id => (projects.find(project => project.id === id) || {}).name || "Проект",
       contractOf: id => contracts.find(item => item.project_id === id)
@@ -579,13 +584,10 @@
     const charts = h("div", { class: "chart-grid" },
       panel("Расходы по месяцам", columns(months, "Расходы сотрудников за последние шесть месяцев")));
     if (!noContracts && data.contractTotal > 0) {
-      const contracted = new Set(data.contracts.map(item => item.project_id));
-      const onContracts = data.counted.filter(expense => contracted.has(expense.project_id));
-      const spentSum = onContracts.reduce((total, expense) => total + Number(expense.amount || 0), 0);
       charts.append(panel("Бюджет всех контрактов", donut([
-        { label: "Расходы", value: spentSum, color: "var(--s1)" },
+        { label: "Выдано сотрудникам", value: data.spentOnContracts, color: "var(--s1)" },
         { label: "Остаток", value: Math.max(0, data.contractTotal - data.spentOnContracts), color: "var(--rest)" }
-      ], percent(data.spentOnContracts, data.contractTotal), "израсходовано", "Как израсходованы все контракты")));
+      ], percent(data.spentOnContracts, data.contractTotal), "выдано", "Сколько выдано из всех контрактов")));
     }
     const recent = data.expenses.slice().sort((a, b) => new Date(b.created_at) - new Date(a.created_at)).slice(0, 8);
 
@@ -657,7 +659,7 @@
       }
       data.projects.forEach(p => {
         const item = data.contractOf(p.id);
-        const spent = data.spentBy[p.id] || 0;
+        const spent = data.issuedBy[p.id] || 0;
         const total = item ? Number(item.amount || 0) : 0;
         const badges = [];
         const budgetBadge = item ? budgetTag(total, spent) : null;
@@ -675,11 +677,11 @@
               h("span", { class: "project-card-label muted" }, "Остаток контракта"),
               h("span", { class: "project-card-value" + (total - spent < 0 ? " negative" : "") }, som(total - spent)),
               meter(spent, total),
-              h("span", { class: "muted" }, "Израсходовано " + som(spent) + " из " + som(total))
+              h("span", { class: "muted" }, "Выдано " + som(spent) + " из " + som(total))
             ]
             : [
               h("span", { class: "project-card-label muted" }, "Контракт не задан"),
-              h("span", { class: "muted" }, "Расходы: " + som(spent))
+              h("span", { class: "muted" }, "Расходы: " + som(data.spentBy[p.id] || 0))
             ],
           badges.length ? h("span", { class: "badges" }, ...badges) : ""));
       });
@@ -813,7 +815,8 @@
 
     // ----- Contract (admin only; protected by RLS in project-contract.sql) -----
     const contractAmount = contract ? Number(contract.amount || 0) : null;
-    const contractLeft = contractAmount === null ? null : contractAmount - deductedTotal;
+    // The contract is used up by top-ups; workers' spending comes out of the money they hold, not the contract.
+    const contractLeft = contractAmount === null ? null : contractAmount - addedTotal;
     const contractInput = h("input", {
       type: "number", min: "0", step: "0.01",
       placeholder: "Сумма контракта, сом",
@@ -859,8 +862,8 @@
         h("span", { class: "stat-note" }, "Укажите сумму контракта ниже"), "accent");
     } else {
       contractStat = stat("Остаток контракта", money(contractLeft),
-        [meter(deductedTotal, contractAmount),
-          h("span", { class: "stat-note" }, "Израсходовано " + money(deductedTotal) + " из " + money(contractAmount))],
+        [meter(addedTotal, contractAmount),
+          h("span", { class: "stat-note" }, "Выдано " + money(addedTotal) + " из " + money(contractAmount))],
         contractLeft < 0 ? "accent negative" : "accent");
     }
 
@@ -873,8 +876,8 @@
       entry.total += Number(expense.amount || 0);
       entry.count += 1;
     });
-    const shareBase = contractAmount > 0 ? contractAmount : deductedTotal;
-    const shareLabel = contractAmount > 0 ? "% контракта" : "% расходов";
+    const shareBase = addedTotal > 0 ? addedTotal : deductedTotal;
+    const shareLabel = addedTotal > 0 ? "% выданных денег" : "% расходов";
     // Colour follows the worker (fixed order by id), never the ranking; past six, the rest share "Другие".
     const colorOf = {};
     Object.keys(spentByWorker).sort().forEach((id, i) => { colorOf[id] = i < SERIES.length - 1 ? SERIES[i] : "var(--rest)"; });
@@ -885,21 +888,24 @@
     if (othersTotal) workerParts.push({ label: "Другие", value: othersTotal, color: "var(--rest)" });
 
     // ----- Line: what is left of the contract after each expense (or total spent, with no contract) -----
-    const timeline = expenses.filter(expense => expense.status !== "rejected")
-      .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
     const hasContract = contractAmount !== null;
+    // With a contract the line follows top-ups; without one it follows workers' spending.
+    const timeline = (hasContract ? transfers : expenses.filter(expense => expense.status !== "rejected"))
+      .slice().sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
     let running = hasContract ? contractAmount : 0;
     const linePoints = timeline.length ? [{
       t: new Date(timeline[0].created_at).getTime() - 12 * 3600 * 1000,
       v: running,
-      note: hasContract ? "Контракт до расходов" : "До расходов"
+      note: hasContract ? "Контракт до пополнений" : "До расходов"
     }] : [];
-    timeline.forEach(expense => {
-      running += (hasContract ? -1 : 1) * Number(expense.amount || 0);
+    timeline.forEach(item => {
+      running += (hasContract ? -1 : 1) * Number(item.amount || 0);
       linePoints.push({
-        t: new Date(expense.created_at).getTime(),
+        t: new Date(item.created_at).getTime(),
         v: running,
-        note: nameOf(expense.worker_id) + ": " + expense.reason + ", −" + money(Number(expense.amount))
+        note: hasContract
+          ? "Пополнение: " + nameOf(item.worker_id) + ", −" + money(Number(item.amount))
+          : nameOf(item.worker_id) + ": " + item.reason + ", −" + money(Number(item.amount))
       });
     });
     const lineTitle = hasContract ? "Остаток контракта по дням" : "Расходы нарастающим итогом";
@@ -978,7 +984,7 @@
     }, "Удалить проект");
     headActions.append(deleteButton);
 
-    const budgetWarning = contractAmount === null ? null : budgetTag(contractAmount, deductedTotal);
+    const budgetWarning = contractAmount === null ? null : budgetTag(contractAmount, addedTotal);
     if (budgetWarning) contractStat.append(budgetWarning);
 
     list.replaceChildren(
@@ -988,16 +994,16 @@
           "", "", "out"),
         stat("Выдано сотрудникам", money(addedTotal), "", "", "in"),
         stat("На руках у сотрудников", money(addedTotal - deductedTotal), "", "", "users")),
-      h("p", { class: "hint" }, "Остаток контракта видит только администратор. Все расходы сотрудников сразу вычитаются из остатка."),
+      h("p", { class: "hint" }, "Остаток контракта видит только администратор. Каждое пополнение вычитается из остатка контракта, а расходы сотрудников — из денег у них на руках."),
       h("div", { class: "chart-grid" },
         panel(lineTitle, linePoints.length
           ? lineChart(linePoints, lineTitle)
-          : h("p", { class: "muted empty" }, "График появится после первого расхода.")),
+          : h("p", { class: "muted empty" }, hasContract ? "График появится после первого пополнения." : "График появится после первого расхода.")),
         hasContract && contractAmount > 0
           ? panel("Бюджет контракта", donut([
-            { label: "Расходы", value: deductedTotal, color: "var(--s1)" },
+            { label: "Выдано сотрудникам", value: addedTotal, color: "var(--s1)" },
             { label: "Остаток", value: Math.max(0, contractLeft), color: "var(--rest)" }
-          ], percent(deductedTotal, contractAmount), "израсходовано", "Как израсходован контракт"))
+          ], percent(addedTotal, contractAmount), "выдано", "Сколько выдано из контракта"))
           : ""),
       panel("Контракт проекта", contractForm, contractMsg),
       panel("Расходы по сотрудникам", breakdown.length
