@@ -58,6 +58,7 @@
   }
 
   const sb = supabase.createClient(cfg.SUPABASE_URL, cfg.SUPABASE_KEY);
+  const maxProofSize = 10 * 1024 * 1024;
   const statusText = status => ({
     pending: "Ожидает решения",
     approved: "Одобрено",
@@ -310,6 +311,53 @@
     if (error) throw error;
   }
 
+  function proofFileInput(label) {
+    return h("input", {
+      class: "proof-file",
+      type: "file",
+      accept: ".png,.jpg,.jpeg,image/png,image/jpeg",
+      "aria-label": label,
+      required: ""
+    });
+  }
+
+  async function uploadProof(file, workerId, projectId) {
+    if (!file) throw new Error("Выберите скриншот или фото-подтверждение");
+    if (file.size > maxProofSize) throw new Error("Размер файла не должен превышать 10 МБ");
+
+    const extension = (file.name.split(".").pop() || "").toLowerCase();
+    const bytes = new Uint8Array(await file.slice(0, 8).arrayBuffer());
+    const isPng = extension === "png" && bytes.length === 8
+      && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47
+      && bytes[4] === 0x0d && bytes[5] === 0x0a && bytes[6] === 0x1a && bytes[7] === 0x0a;
+    const isJpeg = (extension === "jpg" || extension === "jpeg")
+      && bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+    if (!isPng && !isJpeg) throw new Error("Разрешены только файлы PNG, JPG и JPEG");
+    if (file.type && file.type !== (isPng ? "image/png" : "image/jpeg")) {
+      throw new Error("Тип файла не соответствует его содержимому");
+    }
+
+    const path = workerId + "/" + projectId + "/" + crypto.randomUUID() + "." + extension;
+    const { error } = await sb.storage.from("proofs").upload(path, file, {
+      contentType: isPng ? "image/png" : "image/jpeg",
+      upsert: false
+    });
+    if (error) throw error;
+    return path;
+  }
+
+  async function insertWithProof(table, values, file, workerId, projectId) {
+    const path = await uploadProof(file, workerId, projectId);
+    const { error } = await sb.from(table).insert({ ...values, proof_path: path });
+    if (!error) return;
+
+    const { error: cleanupError } = await sb.storage.from("proofs").remove([path]);
+    if (cleanupError) {
+      throw new Error(error.message + "; не удалось удалить незарегистрированный файл: " + cleanupError.message);
+    }
+    throw error;
+  }
+
   // ---------- Login ----------
   function renderLogin() {
     const email = h("input", { type: "email", placeholder: "Эл. почта", autocomplete: "username", required: "" });
@@ -370,15 +418,12 @@
     const sections = isAdmin ? [
       { key: "overview", label: "Обзор", icon: "home", render: adminOverview },
       { key: "projects", label: "Проекты", icon: "grid", render: adminProjects },
-      { key: "pending", label: "На проверке", icon: "check", render: adminPending },
       { key: "workers", label: "Сотрудники", icon: "users", render: adminWorkers }
     ] : [
       { key: "projects", label: "Мои проекты", icon: "grid", render: workerView }
     ];
     const body = h("div", { class: "content" });
     const title = h("strong", { class: "topbar-title" });
-    const pendingBadge = h("span", { class: "nav-badge" });
-    pendingBadge.hidden = true;
     const projectLinks = h("div", { class: "nav nav-projects" });
     const buttons = {};
     const markActive = key => Object.entries(buttons).forEach(([name, button]) => {
@@ -400,11 +445,6 @@
         hideTip();
         return projectView(body, project, () => nav.go("projects"), user);
       },
-      setPending(count) {
-        pendingBadge.hidden = !count;
-        pendingBadge.textContent = count ? String(count) : "";
-        pendingBadge.setAttribute("aria-label", "Ждут решения: " + count);
-      },
       setProjects(projects) {
         projectLinks.replaceChildren(
           h("span", { class: "nav-heading" }, "Проекты"),
@@ -422,8 +462,7 @@
         h("span", { class: "nav-heading" }, "Меню"),
         ...sections.map(section => (buttons[section.key] = h("button", {
           type: "button", class: "nav-item", onclick: () => nav.go(section.key)
-        }, icon(section.icon), h("span", { class: "nav-label" }, section.label),
-        section.key === "pending" ? pendingBadge : "")))),
+        }, icon(section.icon), h("span", { class: "nav-label" }, section.label))))),
       isAdmin ? projectLinks : "",
       h("div", { class: "sidebar-foot" },
         themeToggle(),
@@ -459,7 +498,6 @@
     pending.forEach(expense => { pendingBy[expense.project_id] = (pendingBy[expense.project_id] || 0) + 1; });
     const contractTotal = contracts.reduce((total, item) => total + Number(item.amount || 0), 0);
     const spentOnContracts = contracts.reduce((total, item) => total + (spentBy[item.project_id] || 0), 0);
-    nav.setPending(pending.length);
     nav.setProjects(projects);
     return {
       projects, contracts, expenses, people, counted, pending, spentBy, pendingBy, contractTotal, spentOnContracts,
@@ -490,51 +528,6 @@
         ])));
   }
 
-  // One pending expense with approve / reject. onDone runs after the decision is saved.
-  function decisionCard(expense, workerName, subtitle, onDone) {
-    const comment = h("input", {
-      type: "text",
-      maxlength: "300",
-      placeholder: "Комментарий (для отклонения)",
-      "aria-label": "Комментарий к расходу"
-    });
-    const error = h("p", { class: "error" });
-    const approve = h("button", { type: "button", onclick: () => decide("approved") }, "Одобрить");
-    const reject = h("button", { type: "button", class: "alt", onclick: () => decide("rejected") }, "Отклонить");
-
-    async function decide(status) {
-      error.textContent = "";
-      approve.disabled = true;
-      reject.disabled = true;
-      const { error: updateError } = await sb.from("expenses")
-        .update({
-          status,
-          admin_comment: status === "rejected" ? (comment.value.trim() || null) : null
-        })
-        .eq("id", expense.id)
-        .eq("status", "pending");
-      if (updateError) {
-        error.textContent = "Не удалось сохранить решение: " + updateError.message;
-        approve.disabled = false;
-        reject.disabled = false;
-        return;
-      }
-      await onDone();
-    }
-
-    return h("div", { class: "pending-item" },
-      h("div", { class: "person-row" },
-        avatar(workerName),
-        h("div", { class: "person-text" },
-          h("strong", {}, workerName),
-          h("span", { class: "muted" }, subtitle)),
-        h("strong", { class: "amount-out" }, "−" + som(Number(expense.amount)))),
-      proofButton(expense.proof_path),
-      comment,
-      h("div", { class: "row" }, approve, reject),
-      error);
-  }
-
   // ---------- Admin: overview ----------
   async function adminOverview(body, user, nav) {
     const data = await loadAdminData(nav);
@@ -560,17 +553,13 @@
     if (!noContracts && data.contractTotal > 0) {
       const contracted = new Set(data.contracts.map(item => item.project_id));
       const onContracts = data.counted.filter(expense => contracted.has(expense.project_id));
-      const pendingSum = onContracts.filter(expense => expense.status === "pending")
-        .reduce((total, expense) => total + Number(expense.amount || 0), 0);
-      const approvedSum = onContracts.reduce((total, expense) => total + Number(expense.amount || 0), 0) - pendingSum;
+      const spentSum = onContracts.reduce((total, expense) => total + Number(expense.amount || 0), 0);
       charts.append(panel("Бюджет всех контрактов", donut([
-        { label: "Одобренные расходы", value: approvedSum, color: "var(--s1)" },
-        { label: "Ждут решения", value: pendingSum, color: "var(--s2)" },
+        { label: "Расходы", value: spentSum, color: "var(--s1)" },
         { label: "Остаток", value: Math.max(0, data.contractTotal - data.spentOnContracts), color: "var(--rest)" }
       ], percent(data.spentOnContracts, data.contractTotal), "израсходовано", "Как израсходованы все контракты")));
     }
     const recent = data.expenses.slice().sort((a, b) => new Date(b.created_at) - new Date(a.created_at)).slice(0, 8);
-    const reviewLink = h("button", { type: "button", class: "alt small", onclick: () => nav.go("pending") }, "Открыть проверку");
 
     body.replaceChildren(
       ...contractNotices(data),
@@ -578,8 +567,7 @@
         stat("Остаток по контрактам", noContracts ? "—" : som(data.contractTotal - data.spentOnContracts),
           noContracts ? "" : meter(data.spentOnContracts, data.contractTotal), "accent", "wallet"),
         stat("Сумма контрактов", noContracts ? "—" : som(data.contractTotal), "", "", "doc"),
-        stat("Расходы за этот месяц", som(months[months.length - 1].value), "", "", "out"),
-        stat("На проверке", String(data.pending.length), data.pending.length ? reviewLink : "", "", "check")),
+        stat("Расходы за этот месяц", som(months[months.length - 1].value), "", "", "out")),
       charts,
       panel("Последние расходы", dataTable(["Дата", "Проект", "Сотрудник", "Причина", "Статус", "Сумма"], recent.map(expense =>
         h("tr", {},
@@ -643,7 +631,6 @@
         const spent = data.spentBy[p.id] || 0;
         const total = item ? Number(item.amount || 0) : 0;
         const badges = [];
-        if (data.pendingBy[p.id]) badges.push(h("span", { class: "tag tag-pending" }, "Ждут решения: " + data.pendingBy[p.id]));
         const budgetBadge = item ? budgetTag(total, spent) : null;
         if (budgetBadge) badges.push(budgetBadge);
         grid.append(h("button", {
@@ -671,24 +658,6 @@
 
     body.replaceChildren(panel("Новый проект", form, msg), grid);
     await load();
-  }
-
-  // ---------- Admin: every expense waiting for a decision, across projects ----------
-  async function adminPending(body, user, nav) {
-    const data = await loadAdminData(nav);
-    const queue = data.pending.slice().sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
-    const total = queue.reduce((sum, expense) => sum + Number(expense.amount || 0), 0);
-    body.replaceChildren(
-      ...contractNotices(data).filter(node => node.className === "error"),
-      h("div", { class: "stats" },
-        stat("Ждут решения", String(queue.length), "", "accent", "check"),
-        stat("На сумму", som(total), "", "", "out")),
-      panel("Расходы на проверке",
-        ...(queue.length
-          ? queue.map(expense => decisionCard(expense, data.nameOf(expense.worker_id),
-            data.projectName(expense.project_id) + " · " + expense.reason + " · " + dateTime(expense.created_at),
-            () => nav.go("pending")))
-          : [h("p", { class: "muted empty" }, "Все расходы проверены.")])));
   }
 
   // ---------- Admin: workers and the money they hold ----------
@@ -798,9 +767,6 @@
     const deductedTotal = expenses
       .filter(expense => expense.status !== "rejected")
       .reduce((total, expense) => total + Number(expense.amount || 0), 0);
-    const pendingTotal = expenses
-      .filter(expense => expense.status === "pending")
-      .reduce((total, expense) => total + Number(expense.amount || 0), 0);
     const money = som;
     const date = value => new Date(value).toLocaleString("ru-RU");
     const table = (headers, rows, emptyText) => h("div", { class: "table-wrap" },
@@ -811,9 +777,6 @@
         ])));
 
     const currentMembers = members.map(member => member.user_id);
-
-    const pendingCard = expense => decisionCard(expense, nameOf(expense.worker_id),
-      expense.reason + " · " + date(expense.created_at), () => projectView(body, project, back, user));
 
     // ----- Contract (admin only; protected by RLS in project-contract.sql) -----
     const contractAmount = contract ? Number(contract.amount || 0) : null;
@@ -960,12 +923,11 @@
     const budgetWarning = contractAmount === null ? null : budgetTag(contractAmount, deductedTotal);
     if (budgetWarning) contractStat.append(budgetWarning);
 
-    const pendingExpenses = expenses.filter(expense => expense.status === "pending");
     list.replaceChildren(
       h("div", { class: "stats" },
         contractStat,
         stat("Расходы сотрудников", money(deductedTotal),
-          pendingTotal ? h("span", { class: "stat-note" }, "из них ждут решения: " + money(pendingTotal)) : "", "", "out"),
+          "", "", "out"),
         stat("Выдано сотрудникам", money(addedTotal), "", "", "in"),
         stat("На руках у сотрудников", money(addedTotal - deductedTotal), "", "", "users")),
       h("p", { class: "hint" }, "Остаток контракта видит только администратор. Расходы в ожидании уже вычтены; отклонённые возвращаются в остаток."),
@@ -975,16 +937,11 @@
           : h("p", { class: "muted empty" }, "График появится после первого расхода.")),
         hasContract && contractAmount > 0
           ? panel("Бюджет контракта", donut([
-            { label: "Одобренные расходы", value: deductedTotal - pendingTotal, color: "var(--s1)" },
-            { label: "Ждут решения", value: pendingTotal, color: "var(--s2)" },
+            { label: "Расходы", value: deductedTotal, color: "var(--s1)" },
             { label: "Остаток", value: Math.max(0, contractLeft), color: "var(--rest)" }
           ], percent(deductedTotal, contractAmount), "израсходовано", "Как израсходован контракт"))
           : ""),
       panel("Контракт проекта", contractForm, contractMsg),
-      panel("Ожидают решения",
-        ...(pendingExpenses.length
-          ? pendingExpenses.map(pendingCard)
-          : [h("p", { class: "muted empty" }, "Нет расходов, ожидающих решения.")])),
       panel("Расходы по сотрудникам", breakdown.length
         ? h("div", { class: "split" },
           donut(workerParts, compact(deductedTotal), "сом всего", "Доли расходов по сотрудникам"),
@@ -1210,6 +1167,7 @@
       placeholder: "Причина расхода",
       required: ""
     });
+    const expenseProof = proofFileInput("Скриншот или фото-подтверждение расхода");
     const expenseError = h("p", { class: "error" });
     const expenseSubmit = h("button", { type: "submit" }, "Отправить расход");
     const expenseForm = h("form", {
@@ -1226,13 +1184,13 @@
         expenseError.textContent = "";
         expenseSubmit.disabled = true;
         try {
-          await insertRow("expenses", {
+          await insertWithProof("expenses", {
             project_id: project.project_id,
             worker_id: user.id,
             amount,
             reason,
-            status: "pending"
-          });
+            status: "approved"
+          }, expenseProof.files[0], user.id, project.project_id);
           await workerProjectView(body, project, user, back);
         } catch (dbError) {
           const code = dbError.code ? " (" + dbError.code + ")" : "";
@@ -1240,7 +1198,7 @@
           expenseSubmit.disabled = false;
         }
       }
-    }, expenseAmount, expenseReason, expenseSubmit, expenseError);
+    }, expenseAmount, expenseReason, expenseProof, expenseSubmit, expenseError);
     const expensesTable = h("div", { class: "table-wrap" },
       h("table", {},
         h("thead", {}, h("tr", {},
@@ -1293,7 +1251,7 @@
       panel("Мой баланс по дням", balancePoints.length
         ? lineChart(balancePoints, "Мой баланс по дням")
         : h("p", { class: "muted empty" }, "График появится после первой операции.")),
-      panel("Отправить расход", expenseForm),
+      panel("Отправить расход с подтверждением", expenseForm),
       panel("История расходов", expensesTable),
       panel("История пополнений", transfersTable));
   }
