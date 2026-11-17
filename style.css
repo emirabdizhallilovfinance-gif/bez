@@ -412,3 +412,11 @@ button, .project-card { touch-action: manipulation; }
   .table-wrap td .proof-action { justify-items: end; }
   .table-wrap td .person-row { justify-content: flex-end; flex-wrap: nowrap; }
 }
+
+/* "Install app" button (Android). Sits above the phone tab bar; hidden once installed. */
+.install-button {
+  position: fixed; left: 50%; transform: translateX(-50%);
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 84px);
+  z-index: 50; padding: 10px 18px; border-radius: 999px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.28);
+}
