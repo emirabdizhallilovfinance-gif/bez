@@ -34,3 +34,4 @@ Run in this order in the Supabase SQL Editor: `add-proof-columns.sql`, `proof-st
 - ✅ Contracts, redesign, receipt photos and no-approval expenses are done.
 - ✅ Live at https://bez-navy.vercel.app (Vercel project `bez`, team abdizhalilcorp). Every merge into `main` redeploys it automatically.
 - ✅ Checked on the live site with real logins and phones.
+- ✅ Installable as an app: "B" icon, web manifest, and an install button on Android (iPhone: Safari > Share > Add to Home Screen).
