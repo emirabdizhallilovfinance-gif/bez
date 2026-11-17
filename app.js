@@ -920,6 +920,28 @@
     }, "Скачать отчёт (CSV)");
     headRow.append(exportButton);
 
+    // Delete the whole project (admin only; done by the delete_project database function)
+    const deleteButton = h("button", {
+      type: "button",
+      class: "alt",
+      onclick: async () => {
+        const records = transfers.length + expenses.length;
+        const question = "Удалить проект «" + project.name + "»?\n\n"
+          + (records ? "Вместе с ним удалятся все пополнения и расходы (" + records + "). " : "")
+          + "Это нельзя отменить.";
+        if (!window.confirm(question)) return;
+        deleteButton.disabled = true;
+        const { error: deleteError } = await sb.rpc("delete_project", { p_project_id: project.id });
+        if (deleteError) {
+          window.alert("Не удалось удалить проект: " + deleteError.message);
+          deleteButton.disabled = false;
+          return;
+        }
+        back();
+      }
+    }, "Удалить проект");
+    headRow.append(deleteButton);
+
     const budgetWarning = contractAmount === null ? null : budgetTag(contractAmount, deductedTotal);
     if (budgetWarning) contractStat.append(budgetWarning);
 
