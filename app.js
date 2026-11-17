@@ -918,7 +918,8 @@
         ]);
       }
     }, "Скачать отчёт (CSV)");
-    headRow.append(exportButton);
+    const headActions = h("div", { class: "head-actions" }, exportButton);
+    headRow.append(headActions);
 
     // Delete the whole project (admin only; done by the delete_project database function)
     const deleteButton = h("button", {
@@ -940,7 +941,7 @@
         back();
       }
     }, "Удалить проект");
-    headRow.append(deleteButton);
+    headActions.append(deleteButton);
 
     const budgetWarning = contractAmount === null ? null : budgetTag(contractAmount, deductedTotal);
     if (budgetWarning) contractStat.append(budgetWarning);
